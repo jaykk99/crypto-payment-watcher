@@ -1,11 +1,12 @@
 """Stdlib demo server: same idea as api.py, zero dependencies.
 
-Run:  PAYWATCH_BTC_ADDRESS=<host receive address> \\
+Run:  PAYWATCH_ADDRESSES='{"btc":["<host receive address>"]}' \\
           PAYWATCH_PLANS_FILE=examples/plans.example.json \\
           python3 examples/server.py
-Then:   curl localhost:8000/plans
+Then:   curl localhost:8000/assets
+        curl localhost:8000/plans
         curl -X POST localhost:8000/orders -d '{"plan_id":"starter",
-          "payer_address":"<buyer declared address>"}'
+          "asset":"btc", "payer_address":"<buyer declared address>"}'
 
 This is a demo, not a production deploy: put it behind the host
 project's own auth, and use SQLiteStore in real use, not MemoryStore.
@@ -17,7 +18,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-from paywatch import Watcher  # noqa: E402
+from paywatch import Watcher, supported_assets  # noqa: E402
 from paywatch.watcher import WatcherError  # noqa: E402
 
 
@@ -39,14 +40,27 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _error(self, exc):
+        payload = {"error": str(exc)}
+        if exc.code:
+            payload["code"] = exc.code
+        if exc.provider_errors:
+            payload["provider_errors"] = exc.provider_errors
+        return self._send(exc.status_code, payload)
+
     def _body(self):
         length = int(self.headers.get("Content-Length") or 0)
         return json.loads(self.rfile.read(length) or b"{}") if length else {}
 
     def do_GET(self):
         try:
+            if self.path == "/assets":
+                return self._send(200, {"assets": watcher.asset_statuses()})
             if self.path == "/plans":
                 return self._send(200, {
+                    "assets": [watcher.asset_status(asset)
+                               for asset in supported_assets()
+                               if watcher.pool_for(asset)],
                     "plans": [p.as_dict() for p in watcher.plans.values()]})
             if self.path.startswith("/orders/"):
                 order = watcher.get_order(self.path.split("/")[-1])
@@ -55,7 +69,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, order.public())
             return self._send(404, {"error": "not found"})
         except WatcherError as exc:
-            return self._send(exc.status_code, {"error": str(exc)})
+            return self._error(exc)
 
     def do_POST(self):
         try:
@@ -63,7 +77,8 @@ class Handler(BaseHTTPRequestHandler):
             if self.path == "/orders":
                 order = watcher.create_order(
                     body["plan_id"], body["payer_address"],
-                    buyer_ref=body.get("buyer_ref", ""))
+                    buyer_ref=body.get("buyer_ref", ""),
+                    asset=body.get("asset", "btc"))
                 return self._send(200, order.public())
             parts = self.path.strip("/").split("/")
             if len(parts) == 3 and parts[0] == "orders" and parts[2] == "check":
@@ -75,7 +90,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, watcher.sweep())
             return self._send(404, {"error": "not found"})
         except WatcherError as exc:
-            return self._send(exc.status_code, {"error": str(exc)})
+            return self._error(exc)
 
     def log_message(self, *args):
         pass

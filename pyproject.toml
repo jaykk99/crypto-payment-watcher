@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "crypto-payment-watcher"
-version = "1.0.0"
-description = "Reusable BTC payment watcher: manual pay, mempool.space polling, 2 confirmations, 60-minute window, 1% tolerance, no custody."
+version = "2.0.0"
+description = "Reusable multi-asset payment watcher: address pools, BTC, ETH, BNB, SOL, provider failover, 60-minute window, 1% tolerance, no custody."
 requires-python = ">=3.10"
 license = {text = "MIT"}
 dependencies = []

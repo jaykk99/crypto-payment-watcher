@@ -4,8 +4,9 @@ the same endpoints on the stdlib http.server if you do not want
 FastAPI at all.
 
 Routes (host mounts this app, or copies the pattern):
-  GET  /plans
-  POST /orders            {plan_id, payer_address, buyer_ref?}
+  GET  /assets            per-asset availability for a checkout page
+  GET  /plans             plans plus configured asset availability
+  POST /orders            {plan_id, payer_address, asset?, buyer_ref?}
   GET  /orders/{order_id}
   POST /orders/{order_id}/check
   POST /orders/{order_id}/approve   {owner_secret?} (see approve rules)
@@ -13,7 +14,8 @@ Routes (host mounts this app, or copies the pattern):
 """
 from __future__ import annotations
 
-from .watcher import Watcher, WatcherError, checkout_enabled
+from .assets import supported_assets
+from .watcher import Watcher, WatcherError
 
 
 def create_app(watcher: Watcher):
@@ -24,14 +26,30 @@ def create_app(watcher: Watcher):
 
     @app.exception_handler(WatcherError)
     async def _watcher_error(_request: Request, exc: WatcherError):
-        return JSONResponse({"error": str(exc)}, status_code=exc.status_code)
+        payload = {"error": str(exc)}
+        if exc.code:
+            payload["code"] = exc.code
+        if exc.provider_errors:
+            payload["provider_errors"] = exc.provider_errors
+        return JSONResponse(payload, status_code=exc.status_code)
+
+    @app.get("/assets")
+    async def assets():
+        return {"assets": watcher.asset_statuses()}
 
     @app.get("/plans")
     async def plans():
+        configured = [watcher.asset_status(asset)
+                      for asset in supported_assets()
+                      if watcher.pool_for(asset)]
         return {
-            "checkout_enabled": checkout_enabled(),
+            "checkout_enabled": bool(configured),
+            "assets": configured,
             "plans": [p.as_dict() for p in watcher.plans.values()],
-            "required_confirmations": 2,
+            "required_confirmations": {
+                asset: watcher.asset_status(asset)["required_confirmations"]
+                for asset in supported_assets() if watcher.pool_for(asset)
+            },
             "invoice_minutes": 60,
             "tolerance_pct": 1.0,
         }
@@ -40,7 +58,8 @@ def create_app(watcher: Watcher):
     async def create_order(body: dict):
         order = watcher.create_order(
             body["plan_id"], body["payer_address"],
-            buyer_ref=body.get("buyer_ref", ""))
+            buyer_ref=body.get("buyer_ref", ""),
+            asset=body.get("asset", "btc"))
         return order.public()
 
     @app.get("/orders/{order_id}")

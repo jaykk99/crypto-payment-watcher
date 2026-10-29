@@ -13,9 +13,17 @@ from decimal import Decimal, ROUND_DOWN
 from typing import Dict, List, Optional
 
 REQUIRED_CONFIRMATIONS = 2
+ETH_REQUIRED_CONFIRMATIONS = 12
 INVOICE_EXPIRY_MINUTES = 60
 TOLERANCE_PCT = 1.0
 PLAN_DURATION_DAYS = 30
+
+# Smallest unit decimals by asset. The asset registry in assets.py is
+# the public extension point; these two values let the pure matcher
+# and amount helpers stay free of a registry import cycle.
+ASSET_DECIMALS = {"btc": 8, "eth": 18, "bnb": 18, "sol": 9}
+ASSET_UNITS = {"btc": "sats", "eth": "wei", "bnb": "wei", "sol": "lamports"}
+REQUIRED_CONFIRMATIONS_BY_ASSET = {"btc": 2, "eth": 12, "bnb": 15, "sol": 1}
 
 # ---------------------------------------------------------------- plans
 # Plans are NEVER hardcoded to one project. The host passes its own
@@ -98,6 +106,9 @@ class Order:
     price_usd: float
     payer_address: str
     receive_address: str
+    # Canonical amount in the asset's smallest unit. The historical
+    # field name says sats; for ETH the value is wei. Generic aliases
+    # below are the preferred names for new code.
     expected_sats: int
     created_at: datetime
     status: str = "pending"
@@ -110,8 +121,18 @@ class Order:
     paid_at: Optional[datetime] = None
     expires_at: Optional[datetime] = None
     late_payment_note: Optional[str] = None
+    asset: str = "btc"
+    required_confirmations: int = 0
+    provider: Optional[str] = None
+    provider_error: Optional[str] = None
+    provider_error_kind: Optional[str] = None
+    last_checked_at: Optional[datetime] = None
 
     def __post_init__(self) -> None:
+        self.asset = (self.asset or "btc").strip().lower()
+        if self.required_confirmations <= 0:
+            self.required_confirmations = REQUIRED_CONFIRMATIONS_BY_ASSET.get(
+                self.asset, REQUIRED_CONFIRMATIONS)
         if self.expires_at is None:
             created = self.created_at
             if created.tzinfo is None:
@@ -119,33 +140,124 @@ class Order:
             self.expires_at = created + timedelta(minutes=INVOICE_EXPIRY_MINUTES)
 
     @property
+    def expected_amount(self) -> int:
+        return self.expected_sats
+
+    @expected_amount.setter
+    def expected_amount(self, value: int) -> None:
+        self.expected_sats = int(value)
+
+    @property
+    def expected_wei(self) -> int:
+        return self.expected_sats
+
+    @property
+    def seen_amount(self) -> int:
+        return self.seen_sats
+
+    @seen_amount.setter
+    def seen_amount(self, value: int) -> None:
+        self.seen_sats = int(value)
+
+    @property
+    def seen_wei(self) -> int:
+        return self.seen_sats
+
+    @property
+    def tx_received_amount(self) -> int:
+        return self.tx_received_sats
+
+    @tx_received_amount.setter
+    def tx_received_amount(self, value: int) -> None:
+        self.tx_received_sats = int(value)
+
+    @property
+    def tx_received_wei(self) -> int:
+        return self.tx_received_sats
+
+    @property
     def threshold_sats(self) -> int:
-        return threshold_sats(self.expected_sats)
+        return threshold_amount(self.expected_sats)
+
+    @property
+    def threshold_amount(self) -> int:
+        return threshold_amount(self.expected_sats)
+
+    @property
+    def threshold_wei(self) -> int:
+        return self.threshold_amount
 
     @property
     def shortfall_sats(self) -> int:
-        return max(self.threshold_sats - self.seen_sats, 0)
+        return max(self.threshold_amount - self.seen_amount, 0)
+
+    @property
+    def shortfall_amount(self) -> int:
+        return self.shortfall_sats
+
+    @property
+    def amount_unit(self) -> str:
+        return ASSET_UNITS.get(self.asset, "smallest units")
 
     def public(self) -> Dict:
         """Buyer-safe payload. No secrets exist on this path, and the
         receive address is the host's public receive address only."""
-        return {
+        payload = {
             "id": self.id,
+            "asset": self.asset,
+            "symbol": self.asset.upper(),
             "plan_id": self.plan_id,
             "price_usd": self.price_usd,
             "status": self.status,
-            "expected_sats": self.expected_sats,
-            "threshold_sats": self.threshold_sats,
-            "seen_sats": self.seen_sats,
-            "shortfall_sats": self.shortfall_sats,
+            "payer_address": self.payer_address,
+            "receive_address": self.receive_address,
+            "amount_unit": self.amount_unit,
+            "expected_amount": self.expected_amount,
+            "threshold_amount": self.threshold_amount,
+            "seen_amount": self.seen_amount,
+            "shortfall_amount": self.shortfall_amount,
+            "tx_received_amount": self.tx_received_amount,
             "seen_txid": self.seen_txid,
             "txid": self.txid,
             "confirmations": self.confirmations,
-            "required_confirmations": REQUIRED_CONFIRMATIONS,
+            "required_confirmations": self.required_confirmations,
             "expires_at": self.expires_at.isoformat() if self.expires_at else None,
             "paid_at": self.paid_at.isoformat() if self.paid_at else None,
+            "last_checked_at": (self.last_checked_at.isoformat()
+                                if self.last_checked_at else None),
+            "provider": self.provider,
+            "provider_error": self.provider_error,
+            "provider_error_kind": self.provider_error_kind,
             "late_payment_note": self.late_payment_note,
         }
+        # Legacy BTC names remain for existing host projects. For ETH,
+        # the corresponding asset specific names carry wei values.
+        if self.asset in ("eth", "bnb"):
+            payload.update({
+                "expected_wei": self.expected_amount,
+                "threshold_wei": self.threshold_amount,
+                "seen_wei": self.seen_amount,
+                "shortfall_wei": self.shortfall_amount,
+                "tx_received_wei": self.tx_received_amount,
+            })
+        elif self.asset == "sol":
+            payload.update({
+                "expected_lamports": self.expected_amount,
+                "threshold_lamports": self.threshold_amount,
+                "seen_lamports": self.seen_amount,
+                "shortfall_lamports": self.shortfall_amount,
+                "tx_received_lamports": self.tx_received_amount,
+                "finalized": self.confirmations >= self.required_confirmations,
+            })
+        else:
+            payload.update({
+                "expected_sats": self.expected_amount,
+                "threshold_sats": self.threshold_amount,
+                "seen_sats": self.seen_amount,
+                "shortfall_sats": self.shortfall_amount,
+                "tx_received_sats": self.tx_received_amount,
+            })
+        return payload
 
 
 # ---------------------------------------------------------------- amounts
@@ -160,16 +272,48 @@ def usd_to_sats(price_usd: float, rate_usd_per_btc: float) -> int:
     """Pin an order: USD price / live BTC rate, 8dp rounded down,
     then to sats. Rounded down so a rounding edge never short-changes
     the buyer; the 1% tolerance covers the remaining slack."""
-    if rate_usd_per_btc <= 0:
-        raise ValueError("BTC rate must be positive")
-    btc = (Decimal(str(price_usd)) / Decimal(str(rate_usd_per_btc))).quantize(
-        Decimal("0.00000001"), rounding=ROUND_DOWN)
-    return btc_to_sats(str(btc))
+    return usd_to_amount(price_usd, rate_usd_per_btc, "btc")
+
+
+def usd_to_amount(price_usd: float, rate_usd: float, asset: str = "btc") -> int:
+    """Pin a USD price in an asset's smallest unit, rounded down.
+
+    Integer smallest units are used after this conversion, so ETH and
+    other EVM assets calculate in wei with no floating point amounts.
+    Unknown future assets use 18 decimals only when a caller has not
+    supplied a more specific conversion; registered host assets should
+    pass their registry decimals through ``usd_to_amount_for_decimals``.
+    """
+    decimals = ASSET_DECIMALS.get((asset or "btc").lower(), 18)
+    return usd_to_amount_for_decimals(price_usd, rate_usd, decimals)
+
+
+def usd_to_amount_for_decimals(price_usd: float, rate_usd: float,
+                               decimals: int) -> int:
+    if rate_usd <= 0:
+        raise ValueError("asset rate must be positive")
+    quantum = Decimal(1).scaleb(-decimals)
+    amount = (Decimal(str(price_usd)) / Decimal(str(rate_usd))).quantize(
+        quantum, rounding=ROUND_DOWN)
+    return int(amount * (Decimal(10) ** decimals))
+
+
+def eth_to_wei(amount_eth: str) -> int:
+    return int((Decimal(str(amount_eth)) * Decimal(10) ** 18)
+               .to_integral_value(rounding=ROUND_DOWN))
+
+
+def usd_to_wei(price_usd: float, rate_usd_per_eth: float) -> int:
+    return usd_to_amount(price_usd, rate_usd_per_eth, "eth")
 
 
 def threshold_sats(expected_sats: int) -> int:
     """Qualifying amount: expected minus the 1% tolerance."""
-    return expected_sats - expected_sats // 100
+    return threshold_amount(expected_sats)
+
+
+def threshold_amount(expected_amount: int) -> int:
+    return expected_amount - expected_amount // 100
 
 
 # ------------------------------------------------------- address check
@@ -252,6 +396,103 @@ def valid_btc_address(addr: Optional[str]) -> bool:
     return False
 
 
+def valid_eth_address(addr: Optional[str]) -> bool:
+    """Shared EVM address format check: 0x plus 40 hex characters."""
+    if not addr or not isinstance(addr, str):
+        return False
+    s = addr.strip()
+    if len(s) != 42 or not s.startswith(("0x", "0X")):
+        return False
+    try:
+        int(s[2:], 16)
+    except ValueError:
+        return False
+    return True
+
+
+def valid_sol_address(addr: Optional[str]) -> bool:
+    """Base58 Solana address check, including a 32 byte decode."""
+    if not addr or not isinstance(addr, str):
+        return False
+    s = addr.strip()
+    alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+    if not (32 <= len(s) <= 44) or any(c not in alphabet for c in s):
+        return False
+    value = 0
+    for char in s:
+        value = value * 58 + alphabet.index(char)
+    raw = value.to_bytes((value.bit_length() + 7) // 8, "big") if value else b""
+    leading = len(s) - len(s.lstrip("1"))
+    return leading + len(raw) == 32
+
+
+# ------------------------------------------------------- receive pools
+
+def _clean_address_list(values) -> List[str]:
+    out: List[str] = []
+    seen = set()
+    for value in values or []:
+        address = str(value).strip()
+        if not address:
+            continue
+        # EVM addresses are case insensitive. Other assets, notably
+        # BTC, are not normalized because their encodings can matter.
+        key = address.lower() if valid_eth_address(address) else address
+        if key not in seen:
+            seen.add(key)
+            out.append(address)
+    return out
+
+
+def load_address_pools(env: Optional[Dict[str, str]] = None) -> Dict[str, List[str]]:
+    """Load receive address pools from environment configuration.
+
+    Canonical format is PAYWATCH_ADDRESSES as JSON by asset:
+    ``{"btc": ["addr1", "addr2"], "eth": ["0x..."]}``.
+
+    Per-asset comma separated variables are also accepted:
+    PAYWATCH_BTC_ADDRESSES, PAYWATCH_ETH_ADDRESSES, and generically
+    PAYWATCH_<ASSET>_ADDRESSES. Legacy PAYWATCH_BTC_ADDRESS is a one
+    address BTC pool. Sources for the same asset are combined in JSON,
+    per-asset env, legacy order, with duplicates removed. The same EVM
+    address may appear under multiple EVM assets; that is valid and
+    is not treated as a configuration error. No address is ever
+    supplied by code or defaults.
+    """
+    source = os.environ if env is None else env
+    pools: Dict[str, List[str]] = {}
+    raw_json = source.get("PAYWATCH_ADDRESSES", "").strip()
+    if raw_json:
+        try:
+            parsed = json.loads(raw_json)
+        except json.JSONDecodeError as exc:
+            raise ValueError("PAYWATCH_ADDRESSES is not valid JSON") from exc
+        if not isinstance(parsed, dict):
+            raise ValueError("PAYWATCH_ADDRESSES must be a JSON object")
+        for asset, values in parsed.items():
+            if isinstance(values, str):
+                values = [values]
+            pools[str(asset).lower()] = _clean_address_list(values)
+    # Per asset variables can cover registered and future assets. Scan
+    # deterministically from the environment names that are present.
+    for name, value in sorted(source.items()):
+        if not name.startswith("PAYWATCH_") or not name.endswith("_ADDRESSES"):
+            continue
+        if name == "PAYWATCH_ADDRESSES":
+            continue
+        asset = name[len("PAYWATCH_"):-len("_ADDRESSES")].lower()
+        additions = _clean_address_list(value.split(","))
+        pools[asset] = _clean_address_list((pools.get(asset) or []) + additions)
+    legacy = source.get("PAYWATCH_BTC_ADDRESS", "").strip()
+    if legacy:
+        pools["btc"] = _clean_address_list((pools.get("btc") or []) + [legacy])
+    return pools
+
+
+def address_pool(asset: str, env: Optional[Dict[str, str]] = None) -> List[str]:
+    return load_address_pools(env).get((asset or "btc").lower(), [])
+
+
 # ---------------------------------------------------------------- matching
 
 def tx_received_sats(tx: Dict, receive_addr: str) -> int:
@@ -277,20 +518,107 @@ def tx_confirmations(tx: Dict, tip_height: Optional[int]) -> int:
     return 0
 
 
+def _address_value(value) -> str:
+    if isinstance(value, dict):
+        return str(value.get("hash") or value.get("address") or "")
+    return str(value or "")
+
+
+def _int_value(value, default: int = 0) -> int:
+    try:
+        if isinstance(value, str) and value.lower().startswith("0x"):
+            return int(value, 16)
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def match_account_payment(txs: List[Dict], payer_address: Optional[str],
+                          receive_addr: str, expected_amount: int,
+                          *, lowercase_txid: bool = True,
+                          case_insensitive_addresses: bool = True) -> Dict:
+    """Pure matcher for normalized account chain transactions.
+
+    The provider normalization contract is txid, from_address,
+    to_address, value_wei (or value_amount), and confirmations. This
+    is the single matcher used by every EVM asset. Address comparison
+    is case insensitive, while the declared payer must match exactly
+    apart from EVM hex casing.
+    """
+    need = threshold_amount(expected_amount)
+    best_seen = 0
+    best_txid: Optional[str] = None
+    candidates: List[Dict] = []
+    def normalize_address(value: str) -> str:
+        value = value.strip()
+        return value.lower() if case_insensitive_addresses else value
+
+    payer = normalize_address(payer_address or "")
+    receive = normalize_address(receive_addr or "")
+    for tx in txs or []:
+        txid = tx.get("txid") or tx.get("hash")
+        to_address = normalize_address(_address_value(
+            tx.get("to_address", tx.get("to"))))
+        if not txid or to_address != receive:
+            continue
+        from_address = normalize_address(_address_value(
+            tx.get("from_address", tx.get("from"))))
+        if not payer or from_address != payer:
+            continue
+        value = _int_value(tx.get("value_wei", tx.get(
+            "value_lamports", tx.get("value_amount", tx.get("value")))), 0)
+        if value <= 0:
+            continue
+        if value > best_seen:
+            best_seen = value
+            best_txid = str(txid)
+        if value < need:
+            continue
+        if "confirmations" in tx:
+            confirmations = _int_value(tx.get("confirmations"), 0)
+        elif "finalized" in tx:
+            confirmations = 1 if tx.get("finalized") else 0
+        else:
+            confirmations = 0
+        candidates.append({
+            "txid": str(txid).lower() if lowercase_txid else str(txid),
+            "received_sats": value,
+            "received_amount": value,
+            "confirmations": confirmations,
+        })
+    candidates.sort(key=lambda c: (c["confirmations"], c["received_amount"]),
+                    reverse=True)
+    return {"match": candidates[0] if candidates else None,
+            "best_seen_sats": best_seen,
+            "best_seen_amount": best_seen,
+            "best_seen_txid": best_txid}
+
+
 def match_payment(txs: List[Dict], payer_address: Optional[str],
                   receive_addr: str, expected_sats: int,
-                  tip_height: Optional[int] = None) -> Dict:
+                  tip_height: Optional[int] = None,
+                  asset: str = "btc",
+                  transaction_family: Optional[str] = None) -> Dict:
     """Pure payment matcher over one explorer transaction list.
 
     Returns {"match": candidate|None, "best_seen_sats": int,
-    "best_seen_txid": str|None}. A candidate must spend from the
+    "best_seen_txid": str|None}. A UTXO candidate must spend from the
     declared payer address AND send at least the threshold amount to
     the receive address. Change outputs back to the payer do not
     count: only outputs TO the receive address count. A payment from
     an exchange hot wallet, or any address other than the declared
-    one, does NOT match.
+    one, does NOT match. Account family assets use the normalized
+    EVM matcher above; no individual EVM chain is special cased here.
     """
-    need = threshold_sats(expected_sats)
+    family = transaction_family or (
+        "account" if (asset or "btc").lower() in ("eth", "bnb")
+        else "solana-rpc" if (asset or "btc").lower() == "sol" else "utxo")
+    if family in ("account", "solana-rpc"):
+        return match_account_payment(
+            txs, payer_address, receive_addr, expected_sats,
+            lowercase_txid=(family == "account"),
+            case_insensitive_addresses=(family == "account"))
+    need = threshold_amount(expected_sats)
     best_seen_sats = 0
     best_seen_txid: Optional[str] = None
     candidates: List[Dict] = []
@@ -308,10 +636,12 @@ def match_payment(txs: List[Dict], payer_address: Optional[str],
         candidates.append({
             "txid": tx.get("txid"),
             "received_sats": to_receive,
+            "received_amount": to_receive,
             "confirmations": tx_confirmations(tx, tip_height),
         })
-    candidates.sort(key=lambda c: (c["confirmations"], c["received_sats"]),
+    candidates.sort(key=lambda c: (c["confirmations"], c["received_amount"]),
                     reverse=True)
     return {"match": candidates[0] if candidates else None,
             "best_seen_sats": best_seen_sats,
+            "best_seen_amount": best_seen_sats,
             "best_seen_txid": best_seen_txid}

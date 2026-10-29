@@ -1,7 +1,8 @@
 """Minimal integration: drop the watcher into any project in 6 steps.
 
 1. pip / vendor this package (src/paywatch, stdlib only).
-2. Set PAYWATCH_BTC_ADDRESS to YOUR project's public receive address.
+2. Set PAYWATCH_ADDRESSES to YOUR project's public receive pools,
+   or use PAYWATCH_BTC_ADDRESS for the legacy one address BTC pool.
 3. Set PAYWATCH_PLANS_JSON to YOUR plans (see plans.example.json).
 4. Create a Watcher with YOUR on_unlock callback. That callback is
    where your project grants entitlement: set a tier flag, mint an
@@ -16,8 +17,9 @@ Buyer flow your UI must show, honestly:
   - Pick a plan, enter the wallet address they will send FROM.
   - Pay manually from their own wallet to your receive address.
   - No wallet connection, no signing, no keys, no custody.
-  - Unlock needs 2 confirmations, within 60 minutes, at least 99%
-    of the pinned amount, from the declared address.
+  - Unlock needs the asset confirmation rule (BTC 2, ETH 12,
+    BNB 15, SOL finalized), within 60 minutes, at least 99% of the
+    pinned amount, from the declared address.
   - Late, underpaid, or reused-txid payments do NOT auto-unlock;
     the owner approves those manually.
 """
@@ -48,9 +50,23 @@ def grant_entitlement(order, tx):
           f"for tx {tx.get('txid')}")
 
 
+class OfflineDemoFetcher:
+    """Keeps this file offline. Production Watcher construction omits
+    a custom fetcher and uses the registered live provider stacks."""
+
+    name = "offline-demo"
+
+    def tip_height(self):
+        return 1
+
+    def address_txs(self, _address):
+        return []
+
+
 watcher = Watcher(
     plans={"starter": {"id": "starter", "name": "Starter", "price_usd": 19},
            "pro": {"id": "pro", "name": "Pro", "price_usd": 49}},
+    fetcher=OfflineDemoFetcher(),
     on_unlock=grant_entitlement,
 )
 
