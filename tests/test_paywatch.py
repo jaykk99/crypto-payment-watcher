@@ -204,7 +204,12 @@ def test_manual_approve_fallback():
 
 
 def test_checkout_closed_without_receive_address():
-    old = os.environ.pop("PAYWATCH_BTC_ADDRESS", None)
+    # An explicitly empty env pool closes BTC checkout. (With no env
+    # configuration at all, the shipped default pool would apply
+    # instead; that fallback is covered in test_paywatch_v2.py.)
+    old_addr = os.environ.pop("PAYWATCH_BTC_ADDRESS", None)
+    old_pools = os.environ.get("PAYWATCH_ADDRESSES")
+    os.environ["PAYWATCH_ADDRESSES"] = '{"btc": []}'
     try:
         w = make_watcher()
         try:
@@ -213,8 +218,12 @@ def test_checkout_closed_without_receive_address():
         except WatcherError as exc:
             assert exc.status_code == 503
     finally:
-        if old:
-            os.environ["PAYWATCH_BTC_ADDRESS"] = old
+        if old_pools is None:
+            os.environ.pop("PAYWATCH_ADDRESSES", None)
+        else:
+            os.environ["PAYWATCH_ADDRESSES"] = old_pools
+        if old_addr:
+            os.environ["PAYWATCH_BTC_ADDRESS"] = old_addr
 
 
 def test_unknown_plan_and_bad_payer_rejected():

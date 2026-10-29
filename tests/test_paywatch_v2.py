@@ -1,8 +1,12 @@
 """Offline tests for pools, assets, failover, and availability.
 
-All addresses and hashes here are clearly fake placeholders. Solana
+Fake addresses and hashes here are clearly fake placeholders. Solana
 examples are deterministic base58 encodings of sequential test bytes,
-not a wallet used by any project.
+not a wallet used by any project. One exception, clearly marked in the
+shipped-defaults section at the bottom: those tests assert the owner's
+real PUBLIC receive addresses from paywatch/default_addresses.json.
+Receive addresses are shown to every buyer at checkout, so they are
+public configuration, not secrets.
 """
 import os
 import sqlite3
@@ -15,8 +19,8 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from paywatch import (  # noqa: E402
-    AssetSpec, MemoryStore, SQLiteStore, Watcher, get_asset,
-    load_address_pools, register_asset, supported_assets,
+    AssetSpec, MemoryStore, SQLiteStore, Watcher, default_address_pools,
+    get_asset, load_address_pools, register_asset, supported_assets,
     valid_eth_address, valid_sol_address,
 )
 from paywatch.assets import ASSET_REGISTRY  # noqa: E402
@@ -103,7 +107,12 @@ def test_address_pool_config_formats_and_shared_evm_address():
 
 def test_legacy_single_btc_address_is_one_address_pool():
     pools = load_address_pools({"PAYWATCH_BTC_ADDRESS": "legacy-btc"})
-    assert pools == {"btc": ["legacy-btc"]}
+    # The legacy variable still wins for BTC...
+    assert pools["btc"] == ["legacy-btc"]
+    # ...while assets the env does not mention use shipped defaults.
+    assert pools["eth"] == [DEFAULT_EVM]
+    assert pools["bnb"] == [DEFAULT_EVM]
+    assert pools["sol"] == [DEFAULT_SOL]
 
 
 def test_pool_assignment_least_active_and_rotation():
@@ -497,3 +506,66 @@ def test_api_busy_asset_response_and_assets_listing():
     by_asset = {item["asset"]: item for item in assets}
     assert by_asset["btc"]["available"] is False
     assert by_asset["eth"]["available"] is True
+
+
+# ------------------------------------------------- shipped default pools
+#
+# The constants below are the owner's real PUBLIC receive addresses,
+# shipped in src/paywatch/default_addresses.json on his direct order.
+# They are public configuration (shown to every buyer at checkout),
+# never private keys or seeds.
+
+DEFAULT_BTC = "bc1qytghmmh90apq3w4uwsle97cjrhlq7etajju3t4"
+DEFAULT_EVM = "0x689Bc15555982E5bD01240416F2aB5a6cebb196f"
+DEFAULT_SOL = "HhH3fBgYNDFBuXZZxcEogqHU64Ta15zXo5TzezGJqhX9"
+EXPECTED_DEFAULTS = {
+    "btc": [DEFAULT_BTC],
+    "eth": [DEFAULT_EVM],
+    "bnb": [DEFAULT_EVM],
+    "sol": [DEFAULT_SOL],
+}
+
+
+def test_shipped_default_addresses_file_is_exact():
+    import json as _json
+    from pathlib import Path as _Path
+    path = (_Path(__file__).parent / ".." / "src" / "paywatch"
+            / "default_addresses.json")
+    parsed = _json.loads(path.read_text(encoding="utf-8"))
+    assert parsed == EXPECTED_DEFAULTS
+    assert default_address_pools() == EXPECTED_DEFAULTS
+
+
+def test_shipped_defaults_load_with_no_env():
+    # No env configuration at all: every asset falls back to the
+    # shipped default pool, so a fresh checkout works out of the box.
+    assert load_address_pools({}) == EXPECTED_DEFAULTS
+
+
+def test_invoice_created_against_default_btc_pool():
+    # The autouse fixture clears every PAYWATCH_* pool variable, and
+    # no address_pools are passed, so the Watcher loads the shipped
+    # defaults through the normal path.
+    watcher = Watcher(plans=PLANS, store=MemoryStore(),
+                      fetcher=FakeChain(), rate_fetcher=FakePrice())
+    order = watcher.create_order("starter", BTC_PAYER, rate_usd=19000.0)
+    assert order.receive_address == DEFAULT_BTC
+
+
+def test_env_overrides_defaults_per_asset():
+    pools = load_address_pools({"PAYWATCH_ETH_ADDRESSES": EVM_RECEIVE})
+    assert pools["eth"] == [EVM_RECEIVE]  # env wins for the asset it sets
+    assert pools["btc"] == [DEFAULT_BTC]  # unmentioned assets use defaults
+    assert pools["bnb"] == [DEFAULT_EVM]
+    assert pools["sol"] == [DEFAULT_SOL]
+    pools = load_address_pools(
+        {"PAYWATCH_ADDRESSES": '{"sol": ["env-sol-1"]}'})
+    assert pools["sol"] == ["env-sol-1"]
+    assert pools["btc"] == [DEFAULT_BTC]
+    assert pools["eth"] == [DEFAULT_EVM]
+
+
+def test_explicit_empty_env_pool_closes_asset_without_default_fill():
+    pools = load_address_pools({"PAYWATCH_ADDRESSES": '{"btc": []}'})
+    assert pools["btc"] == []  # explicitly closed, defaults do not fill
+    assert pools["eth"] == [DEFAULT_EVM]

@@ -59,7 +59,11 @@ class AssetUnavailableError(WatcherError):
 
 
 def receive_addresses(asset: str = "btc") -> List[str]:
-    """Configured public receive pool for one asset, env only."""
+    """Configured public receive pool for one asset.
+
+    Environment configuration wins per asset; assets the environment
+    does not configure fall back to the shipped default pool.
+    """
     return address_pool(asset)
 
 

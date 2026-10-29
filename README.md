@@ -87,10 +87,26 @@ transactions as confirmed.
 
 ## Receive address pools
 
-Configure pools in the environment only. Addresses are never stored
-in code, tests, examples, or this README.
+Pools resolve per asset with this precedence:
 
-Canonical format:
+1. **Environment configuration wins** for every asset it configures.
+   Set any of the variables below and they govern that asset. An
+   explicitly empty env pool (for example `PAYWATCH_ADDRESSES` with
+   `{"btc": []}`) closes that asset's checkout.
+2. **Shipped defaults fill the rest.** Assets the environment does
+   not mention fall back to the default pools in
+   `src/paywatch/default_addresses.json`, so a fresh checkout has
+   working pools for BTC, ETH, BNB, and SOL out of the box.
+
+The shipped defaults are the owner's real **public** receive
+addresses, committed on his direct order. That is safe for receive
+addresses: they are shown to every buyer at checkout, so they are
+public configuration, not secrets. (The same ETH pool address also
+serves BNB; it is one multi-chain EVM address.) What must never be
+committed, here or anywhere, is a private key or seed. This app
+never accepts one in the first place.
+
+Canonical env format:
 
 ```bash
 export PAYWATCH_ADDRESSES='{"btc":["btc-receive-1","btc-receive-2"],"eth":["evm-receive-1"],"bnb":["evm-receive-1"],"sol":["sol-receive-1"]}'
@@ -221,7 +237,7 @@ It needs `pip install fastapi` and is optional; the core does not.
 
 | Variable | Required | Meaning |
 |---|---|---|
-| `PAYWATCH_ADDRESSES` | One pool source is required per offered asset | JSON object of receive address pools by asset key. |
+| `PAYWATCH_ADDRESSES` | Optional override | JSON object of receive address pools by asset key. Overrides the shipped defaults for the assets it names. |
 | `PAYWATCH_BTC_ADDRESSES` | Optional | Comma separated BTC receive pool. |
 | `PAYWATCH_ETH_ADDRESSES` | Optional | Comma separated Ethereum receive pool. |
 | `PAYWATCH_BNB_ADDRESSES` | Optional | Comma separated BNB Chain receive pool. |
@@ -245,9 +261,11 @@ It needs `pip install fastapi` and is optional; the core does not.
 | `COINBASE_BASE_URL` | Optional | Default `https://api.coinbase.com/v2`. |
 | `KRAKEN_BASE_URL` | Optional | Default `https://api.kraken.com/0/public`. |
 
-No wallet address, private key, seed, or API key is ever stored in
-code, README, tests, or fixtures. Test fixtures use fake placeholder
-addresses and hashes.
+No private key, seed, or API key is ever stored in code, README,
+tests, or fixtures. Test fixtures use fake placeholder addresses and
+hashes, except the shipped-defaults tests, which assert the owner's
+public receive addresses from `default_addresses.json` (see the
+Receive address pools section for why those are public).
 
 ## Adding another crypto
 
@@ -264,7 +282,8 @@ branches in the watcher.
    family, or normalized account transactions with `txid`,
    `from_address`, `to_address`, `value_amount`, and
    `confirmations`.
-3. Configure that asset's receive pool in the environment.
+3. Give that asset a receive pool: add it to the shipped defaults in
+   `default_addresses.json`, or configure it in the environment.
 4. Add mocked provider tests for invoice creation, matching, payer
    mismatch, and provider failure.
 

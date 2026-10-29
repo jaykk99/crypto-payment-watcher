@@ -10,6 +10,7 @@ import os
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, ROUND_DOWN
+from pathlib import Path
 from typing import Dict, List, Optional
 
 REQUIRED_CONFIRMATIONS = 2
@@ -444,8 +445,57 @@ def _clean_address_list(values) -> List[str]:
     return out
 
 
+# ------------------------------------------------- shipped default pools
+#
+# The owner ships his real PUBLIC receive addresses in
+# default_addresses.json, next to this module. Receive addresses are
+# public by design: every buyer is shown the assigned one at checkout,
+# so they are configuration, not secrets. Private keys and seeds are a
+# different matter entirely and must NEVER be committed anywhere.
+#
+# Precedence, per asset: explicit environment configuration wins when
+# the asset is configured there at all (an explicitly empty env pool
+# closes that asset's checkout); otherwise the shipped default pool
+# below applies, so a fresh checkout works out of the box.
+
+_DEFAULT_VALIDATORS = {
+    "btc": valid_btc_address,
+    "eth": valid_eth_address,
+    "bnb": valid_eth_address,
+    "sol": valid_sol_address,
+}
+
+_cached_default_pools: Optional[Dict[str, List[str]]] = None
+
+
+def default_address_pools() -> Dict[str, List[str]]:
+    """The shipped default receive pools from default_addresses.json."""
+    global _cached_default_pools
+    if _cached_default_pools is None:
+        path = Path(__file__).with_name("default_addresses.json")
+        parsed = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(parsed, dict):
+            raise ValueError("default_addresses.json must be a JSON object")
+        pools: Dict[str, List[str]] = {}
+        for asset, values in parsed.items():
+            if isinstance(values, str):
+                values = [values]
+            key = str(asset).lower()
+            cleaned = _clean_address_list(values)
+            validator = _DEFAULT_VALIDATORS.get(key)
+            if validator is not None:
+                for address in cleaned:
+                    if not validator(address):
+                        raise ValueError(
+                            f"invalid shipped default address for {key}")
+            pools[key] = cleaned
+        _cached_default_pools = pools
+    return {asset: list(values)
+            for asset, values in _cached_default_pools.items()}
+
+
 def load_address_pools(env: Optional[Dict[str, str]] = None) -> Dict[str, List[str]]:
-    """Load receive address pools from environment configuration.
+    """Load receive address pools, env first, shipped defaults as fallback.
 
     Canonical format is PAYWATCH_ADDRESSES as JSON by asset:
     ``{"btc": ["addr1", "addr2"], "eth": ["0x..."]}``.
@@ -456,11 +506,17 @@ def load_address_pools(env: Optional[Dict[str, str]] = None) -> Dict[str, List[s
     address BTC pool. Sources for the same asset are combined in JSON,
     per-asset env, legacy order, with duplicates removed. The same EVM
     address may appear under multiple EVM assets; that is valid and
-    is not treated as a configuration error. No address is ever
-    supplied by code or defaults.
+    is not treated as a configuration error.
+
+    An asset that the environment configures at all, even with an
+    explicitly empty pool, is governed by the environment alone (an
+    empty pool is how an operator closes one asset's checkout). Every
+    asset the environment does not mention falls back to the shipped
+    default pool in default_addresses.json.
     """
     source = os.environ if env is None else env
     pools: Dict[str, List[str]] = {}
+    mentioned = set()
     raw_json = source.get("PAYWATCH_ADDRESSES", "").strip()
     if raw_json:
         try:
@@ -472,7 +528,9 @@ def load_address_pools(env: Optional[Dict[str, str]] = None) -> Dict[str, List[s
         for asset, values in parsed.items():
             if isinstance(values, str):
                 values = [values]
-            pools[str(asset).lower()] = _clean_address_list(values)
+            key = str(asset).lower()
+            mentioned.add(key)
+            pools[key] = _clean_address_list(values)
     # Per asset variables can cover registered and future assets. Scan
     # deterministically from the environment names that are present.
     for name, value in sorted(source.items()):
@@ -481,11 +539,16 @@ def load_address_pools(env: Optional[Dict[str, str]] = None) -> Dict[str, List[s
         if name == "PAYWATCH_ADDRESSES":
             continue
         asset = name[len("PAYWATCH_"):-len("_ADDRESSES")].lower()
+        mentioned.add(asset)
         additions = _clean_address_list(value.split(","))
         pools[asset] = _clean_address_list((pools.get(asset) or []) + additions)
     legacy = source.get("PAYWATCH_BTC_ADDRESS", "").strip()
     if legacy:
+        mentioned.add("btc")
         pools["btc"] = _clean_address_list((pools.get("btc") or []) + [legacy])
+    for asset, values in default_address_pools().items():
+        if asset not in mentioned and not pools.get(asset):
+            pools[asset] = values
     return pools
 
 
