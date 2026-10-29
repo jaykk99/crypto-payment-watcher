@@ -11,16 +11,26 @@ Routes (host mounts this app, or copies the pattern):
   POST /orders/{order_id}/check
   POST /orders/{order_id}/approve   {owner_secret?} (see approve rules)
   POST /sweep             (host cron calls this, or calls sweep())
+  GET  /checkout          buyer checkout page (?plan=<plan_id>&ref=&return=)
 """
 from __future__ import annotations
+
+from importlib import resources
 
 from .assets import supported_assets
 from .watcher import Watcher, WatcherError
 
 
+def checkout_html() -> str:
+    """The bundled buyer checkout page. Serve it next to the JSON
+    routes; it calls them on the same origin (or ?api=<base url>)."""
+    return resources.files("paywatch").joinpath(
+        "static/checkout.html").read_text(encoding="utf-8")
+
+
 def create_app(watcher: Watcher):
     from fastapi import FastAPI, Request
-    from fastapi.responses import JSONResponse
+    from fastapi.responses import HTMLResponse, JSONResponse
 
     app = FastAPI(title="crypto-payment-watcher")
 
@@ -32,6 +42,10 @@ def create_app(watcher: Watcher):
         if exc.provider_errors:
             payload["provider_errors"] = exc.provider_errors
         return JSONResponse(payload, status_code=exc.status_code)
+
+    @app.get("/checkout", response_class=HTMLResponse)
+    async def checkout():
+        return HTMLResponse(checkout_html())
 
     @app.get("/assets")
     async def assets():

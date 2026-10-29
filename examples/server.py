@@ -3,7 +3,8 @@
 Run:  PAYWATCH_ADDRESSES='{"btc":["<host receive address>"]}' \\
           PAYWATCH_PLANS_FILE=examples/plans.example.json \\
           python3 examples/server.py
-Then:   curl localhost:8000/assets
+Then:   open http://localhost:8000/checkout?plan=starter
+        curl localhost:8000/assets
         curl localhost:8000/plans
         curl -X POST localhost:8000/orders -d '{"plan_id":"starter",
           "asset":"btc", "payer_address":"<buyer declared address>"}'
@@ -19,6 +20,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from paywatch import Watcher, supported_assets  # noqa: E402
+from paywatch.api import checkout_html  # noqa: E402
 from paywatch.watcher import WatcherError  # noqa: E402
 
 
@@ -52,8 +54,18 @@ class Handler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length") or 0)
         return json.loads(self.rfile.read(length) or b"{}") if length else {}
 
+    def _send_html(self, html):
+        body = html.encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_GET(self):
         try:
+            if self.path.split("?")[0] == "/checkout":
+                return self._send_html(checkout_html())
             if self.path == "/assets":
                 return self._send(200, {"assets": watcher.asset_statuses()})
             if self.path == "/plans":
@@ -61,7 +73,8 @@ class Handler(BaseHTTPRequestHandler):
                     "assets": [watcher.asset_status(asset)
                                for asset in supported_assets()
                                if watcher.pool_for(asset)],
-                    "plans": [p.as_dict() for p in watcher.plans.values()]})
+                    "plans": [p.as_dict() for p in watcher.plans.values()],
+                    "invoice_minutes": 60})
             if self.path.startswith("/orders/"):
                 order = watcher.get_order(self.path.split("/")[-1])
                 if order is None:

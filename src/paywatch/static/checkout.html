@@ -1,0 +1,409 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Checkout</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js"></script>
+<style>
+  :root {
+    --bg: #0E1116; --card: #171B22; --line: #2A303A; --text: #E8EAED;
+    --muted: #9AA3AF; --faint: #7C8592; --accent: #F7B32B; --accent-ink: #14110A;
+    --accent-bg: #1F1A0E; --ok: #34D399; --ok-bg: #10291F; --info: #60A5FA;
+    --info-bg: #0F1B2D; --bad: #F87171; --bad-bg: #2A1414;
+    --mono: 'JetBrains Mono', ui-monospace, monospace;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font-family: Inter, system-ui, sans-serif; }
+  button, input { font-family: inherit; }
+  .app { max-width: 440px; min-height: 100vh; margin: 0 auto; padding: 20px 16px 24px; display: flex; flex-direction: column; gap: 16px; }
+  .top { display: flex; align-items: center; justify-content: space-between; }
+  .top-left { display: flex; align-items: center; gap: 10px; }
+  .title { font-weight: 700; font-size: 18px; }
+  .safe { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+  .icon-btn { width: 44px; height: 44px; border-radius: 12px; border: 1px solid var(--line); background: var(--card); color: var(--text); display: flex; align-items: center; justify-content: center; cursor: pointer; padding: 0; }
+  .due { padding: 16px; border-radius: 16px; background: var(--card); border: 1px solid var(--line); display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  .due small { display: block; font-size: 12px; color: var(--muted); margin-bottom: 2px; }
+  .due strong { font-weight: 600; font-size: 15px; }
+  .due .price { font-weight: 700; font-size: 26px; letter-spacing: -0.02em; white-space: nowrap; }
+  .label { font-size: 12px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); margin: 0 0 10px; display: block; }
+  .coins { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+  .coin { display: flex; align-items: center; gap: 10px; min-height: 60px; padding: 10px 12px; border-radius: 14px; color: var(--text); background: var(--card); border: 1px solid var(--line); cursor: pointer; text-align: left; }
+  .coin[aria-pressed="true"] { background: var(--accent-bg); border: 2px solid var(--accent); }
+  .coin:disabled { opacity: 0.45; cursor: not-allowed; }
+  .badge { width: 36px; height: 36px; flex: none; border-radius: 18px; display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 700; color: var(--bg); }
+  .coin b { display: block; font-weight: 600; font-size: 14px; }
+  .coin span { display: block; font-size: 11px; color: var(--muted); }
+  input[type=text] { width: 100%; height: 52px; border-radius: 14px; border: 1px solid var(--line); background: var(--card); color: var(--text); padding: 0 14px; font-family: var(--mono); font-size: 13px; }
+  input::placeholder { color: var(--faint); }
+  input:focus, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .hint { font-size: 12px; color: var(--muted); line-height: 1.45; margin-top: 8px; }
+  .primary { height: 54px; width: 100%; border: 0; border-radius: 14px; background: var(--accent); color: var(--accent-ink); font-weight: 700; font-size: 16px; cursor: pointer; }
+  .primary:disabled { opacity: 0.5; cursor: wait; }
+  .ghost { height: 54px; width: 100%; border: 1px solid var(--accent); border-radius: 14px; background: transparent; color: var(--accent); font-weight: 700; font-size: 16px; cursor: pointer; }
+  .ghost:disabled { opacity: 0.5; cursor: wait; }
+  .error { padding: 12px 14px; border-radius: 12px; background: var(--bad-bg); border: 1px solid var(--bad); font-size: 13px; line-height: 1.45; }
+  .status { display: flex; align-items: center; gap: 12px; padding: 14px 16px; border-radius: 14px; border: 1px solid; }
+  .dot { width: 10px; height: 10px; flex: none; border-radius: 5px; }
+  .status-text { flex: 1; }
+  .status-text b { display: block; font-weight: 600; font-size: 15px; }
+  .status-text span { display: block; font-size: 12px; color: #B8BFC9; margin-top: 2px; }
+  .timer { text-align: right; }
+  .timer b { display: block; font-family: var(--mono); font-size: 20px; font-weight: 600; }
+  .timer span { font-size: 10px; color: var(--muted); }
+  .bar { height: 4px; border-radius: 2px; background: var(--line); overflow: hidden; margin-top: -8px; }
+  .bar div { height: 4px; background: var(--accent); }
+  .paybox { background: var(--card); border: 1px solid var(--line); border-radius: 18px; padding: 18px; display: flex; flex-direction: column; align-items: center; gap: 14px; }
+  .paybox small { font-size: 12px; color: var(--muted); }
+  .amount { font-family: var(--mono); font-size: 26px; font-weight: 600; text-align: center; word-break: break-all; }
+  .qr { background: #fff; border-radius: 14px; padding: 12px; line-height: 0; }
+  .qr img, .qr svg { width: 168px; height: 168px; }
+  .addr-row { display: flex; gap: 8px; }
+  .addr { flex: 1; min-width: 0; border-radius: 14px; border: 1px solid var(--line); background: var(--card); padding: 12px 14px; font-family: var(--mono); font-size: 12px; line-height: 1.5; word-break: break-all; }
+  .copy { width: 52px; flex: none; border-radius: 14px; border: 1px solid var(--line); background: var(--card); color: var(--text); cursor: pointer; display: flex; align-items: center; justify-content: center; }
+  .copy.done { color: var(--ok); }
+  .mono { font-family: var(--mono); color: var(--text); }
+  .result { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; text-align: center; padding: 24px 0; }
+  .result-icon { width: 84px; height: 84px; border-radius: 42px; border: 1px solid; display: flex; align-items: center; justify-content: center; }
+  .result h2 { margin: 0; font-size: 24px; }
+  .result p { margin: 0; font-size: 14px; color: var(--muted); max-width: 300px; line-height: 1.5; }
+  .foot { margin-top: auto; font-size: 11px; color: var(--faint); text-align: center; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main class="app">
+  <div class="top">
+    <div class="top-left">
+      <button class="icon-btn" id="back" aria-label="Back" hidden>
+        <svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
+      </button>
+      <div class="title">Checkout</div>
+    </div>
+    <div class="safe">
+      <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
+      No wallet connect
+    </div>
+  </div>
+
+  <div class="due">
+    <div><small>Amount due</small><strong id="planName">Loading…</strong></div>
+    <div class="price" id="planPrice">—</div>
+  </div>
+
+  <div class="error" id="error" role="alert" hidden></div>
+
+  <!-- Step 1: coin + wallet -->
+  <section id="select" hidden>
+    <div style="margin-bottom: 20px">
+      <span class="label">1 · Pay with</span>
+      <div class="coins" id="coins"></div>
+    </div>
+    <div style="margin-bottom: 20px">
+      <label class="label" for="payer">2 · Your sending wallet</label>
+      <input type="text" id="payer" autocomplete="off" spellcheck="false" autocapitalize="off">
+      <div class="hint">We match your payment to this address. Send from this exact wallet.</div>
+    </div>
+    <div class="hint" style="text-align: center; margin-bottom: 10px">Your price is locked for <span id="lockMins">60</span> minutes once you continue.</div>
+    <button class="primary" id="create">Continue to payment</button>
+  </section>
+
+  <!-- Step 2: pay -->
+  <section id="pay" hidden style="display: flex; flex-direction: column; gap: 16px; flex: 1">
+    <div class="status" id="statusBox">
+      <div class="dot" id="statusDot"></div>
+      <div class="status-text"><b id="statusTitle"></b><span id="statusSub"></span></div>
+      <div class="timer" id="timer"><b id="countdown">--:--</b><span>left</span></div>
+    </div>
+    <div class="bar" id="bar"><div id="barFill" style="width: 100%"></div></div>
+
+    <div id="open" style="display: flex; flex-direction: column; gap: 16px">
+      <div class="paybox">
+        <small>Send exactly</small>
+        <div class="amount" id="amount"></div>
+        <div class="qr" id="qr" role="img" aria-label="Payment QR code"></div>
+      </div>
+      <div>
+        <span class="label">To this <span id="assetName"></span> address</span>
+        <div class="addr-row">
+          <div class="addr" id="address"></div>
+          <button class="copy" id="copy" aria-label="Copy address">
+            <svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>
+          </button>
+        </div>
+        <div class="hint">From <span class="mono" id="fromShort"></span> · unlocks after <span id="confRule"></span></div>
+      </div>
+      <button class="ghost" id="check">Check payment now</button>
+    </div>
+
+    <div class="result" id="done" hidden>
+      <div class="result-icon" style="background: var(--ok-bg); border-color: var(--ok); color: var(--ok)">
+        <svg aria-hidden="true" width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>
+      </div>
+      <h2>Payment confirmed</h2>
+      <p id="doneText"></p>
+      <button class="primary" id="finish" style="margin-top: 10px">Done</button>
+    </div>
+
+    <div class="result" id="expired" hidden>
+      <div class="result-icon" style="background: var(--bad-bg); border-color: var(--bad); color: var(--bad)">
+        <svg aria-hidden="true" width="38" height="38" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+      </div>
+      <h2>Invoice expired</h2>
+      <p>Don't send to this invoice now. Start a new one to get a fresh price. If you already paid, keep your transaction ID and contact support.</p>
+      <button class="primary" id="restart" style="margin-top: 10px">Start a new invoice</button>
+    </div>
+
+    <div class="foot" id="foot"></div>
+  </section>
+</main>
+
+<script>
+(function () {
+  "use strict";
+  // Config from the URL: ?plan=<plan_id>&ref=<buyer_ref>&api=<base url>&return=<url>
+  var params = new URLSearchParams(location.search);
+  var API = (params.get("api") || "").replace(/\/$/, "");
+  var PLAN_ID = params.get("plan");
+  var BUYER_REF = params.get("ref") || "";
+  var RETURN_URL = params.get("return");
+  var POLL_MS = 30000;
+  var COLORS = { btc: "#F7931A", eth: "#8A92B2", sol: "#9945FF", bnb: "#F3BA2F" };
+  var HINTS = { btc: "bc1q… or 1… / 3…", eth: "0x…", bnb: "0x…", sol: "Base58 address" };
+  var STORE_KEY = "paywatch_order_" + (PLAN_ID || "");
+
+  var $ = function (id) { return document.getElementById(id); };
+  var state = { plan: null, assets: [], asset: null, order: null, invoiceMinutes: 60, pollTimer: null, tickTimer: null };
+
+  function api(path, opts) {
+    return fetch(API + path, Object.assign({ headers: { "Content-Type": "application/json" } }, opts || {}))
+      .then(function (res) {
+        return res.json().catch(function () { return {}; }).then(function (body) {
+          if (!res.ok) { var e = new Error(body.error || ("Request failed (" + res.status + ")")); e.code = body.code; throw e; }
+          return body;
+        });
+      });
+  }
+  function showError(msg) { $("error").textContent = msg; $("error").hidden = !msg; }
+  function usd(n) { return "$" + Number(n).toFixed(2); }
+  function storageGet(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
+  function storageSet(k, v) { try { v == null ? localStorage.removeItem(k) : localStorage.setItem(k, v); } catch (e) {} }
+
+  // Integer smallest-unit -> decimal string, safe for wei.
+  function formatUnits(value, decimals) {
+    var s = String(value).replace(/^0+/, "") || "0";
+    if (decimals === 0) return s;
+    while (s.length <= decimals) s = "0" + s;
+    var whole = s.slice(0, s.length - decimals), frac = s.slice(s.length - decimals).replace(/0+$/, "");
+    return frac ? whole + "." + frac : whole;
+  }
+  function assetInfo(key) { return state.assets.filter(function (a) { return a.asset === key; })[0]; }
+
+  // ---------- step 1 ----------
+  function renderCoins() {
+    var box = $("coins");
+    box.innerHTML = "";
+    state.assets.forEach(function (a) {
+      var b = document.createElement("button");
+      b.type = "button";
+      b.className = "coin";
+      b.disabled = !a.available;
+      b.setAttribute("aria-pressed", String(a.asset === state.asset));
+      var sub = !a.available ? "Unavailable now"
+        : a.asset === "sol" ? "Finalized" : a.required_confirmations + " confirmations";
+      b.innerHTML = '<div class="badge"></div><div><b></b><span></span></div>';
+      b.querySelector(".badge").style.background = COLORS[a.asset] || "#9AA3AF";
+      b.querySelector(".badge").textContent = a.symbol;
+      b.querySelector("b").textContent = a.name;
+      b.querySelector("span").textContent = sub;
+      if (!a.available && a.message) b.title = a.message;
+      b.addEventListener("click", function () { state.asset = a.asset; renderCoins(); });
+      box.appendChild(b);
+    });
+    var a = assetInfo(state.asset);
+    $("payer").placeholder = a ? "Paste your " + a.symbol + " address (" + (HINTS[a.asset] || "") + ")" : "Pick a coin first";
+  }
+
+  function showSelect() {
+    stopTimers();
+    $("pay").hidden = true; $("select").hidden = false; $("back").hidden = true;
+    renderCoins();
+  }
+
+  function createOrder() {
+    showError("");
+    var payer = $("payer").value.trim();
+    if (!state.asset) return showError("Pick a coin to pay with.");
+    if (!payer) return showError("Paste the wallet address you will send from.");
+    $("create").disabled = true;
+    api("/orders", { method: "POST", body: JSON.stringify({ plan_id: PLAN_ID, asset: state.asset, payer_address: payer, buyer_ref: BUYER_REF }) })
+      .then(function (order) { storageSet(STORE_KEY, order.id); state.order = order; showPay(); })
+      .catch(function (e) {
+        if (e.code === "ASSET_UNAVAILABLE") { refreshAssets(); }
+        showError(e.message);
+      })
+      .then(function () { $("create").disabled = false; });
+  }
+
+  // ---------- step 2 ----------
+  function stopTimers() { clearInterval(state.pollTimer); clearInterval(state.tickTimer); state.pollTimer = state.tickTimer = null; }
+
+  function showPay() {
+    $("select").hidden = true; $("pay").hidden = false;
+    var o = state.order, a = assetInfo(o.asset) || { decimals: 8, name: o.symbol };
+    var amount = formatUnits(o.expected_amount, a.decimals);
+    $("amount").textContent = amount + " " + o.symbol;
+    $("assetName").textContent = a.name;
+    $("address").textContent = o.receive_address;
+    var p = o.payer_address || "";
+    $("fromShort").textContent = p.length > 16 ? p.slice(0, 8) + "…" + p.slice(-6) : p;
+    $("confRule").textContent = o.asset === "sol" ? "finalization" : o.required_confirmations + " confirmations";
+    $("foot").textContent = "Order " + o.id + " · checks every 30 seconds";
+    renderQR(o, amount);
+    render();
+    stopTimers();
+    state.tickTimer = setInterval(tick, 1000);
+    state.pollTimer = setInterval(check, POLL_MS);
+    tick();
+  }
+
+  function renderQR(o, amount) {
+    var uri = o.receive_address;
+    if (o.asset === "btc") uri = "bitcoin:" + o.receive_address + "?amount=" + amount;
+    else if (o.asset === "sol") uri = "solana:" + o.receive_address + "?amount=" + amount;
+    else if (o.asset === "eth") uri = "ethereum:" + o.receive_address + "@1?value=" + o.expected_amount;
+    else if (o.asset === "bnb") uri = "ethereum:" + o.receive_address + "@56?value=" + o.expected_amount;
+    var box = $("qr");
+    if (typeof qrcode !== "function") { box.hidden = true; return; }
+    var qr = qrcode(0, "M"); qr.addData(uri); qr.make();
+    box.innerHTML = qr.createSvgTag({ cellSize: 4, margin: 0, scalable: true });
+  }
+
+  function secondsLeft() {
+    var o = state.order;
+    if (!o || !o.expires_at) return null;
+    return Math.max(0, Math.ceil((new Date(o.expires_at).getTime() - Date.now()) / 1000));
+  }
+
+  function tick() {
+    var left = secondsLeft();
+    if (left == null) return;
+    var mm = Math.floor(left / 60), ss = left % 60;
+    $("countdown").textContent = (mm < 10 ? "0" : "") + mm + ":" + (ss < 10 ? "0" : "") + ss;
+    var urgent = left <= 300;
+    $("countdown").style.color = urgent ? "var(--bad)" : "var(--text)";
+    $("barFill").style.background = urgent ? "var(--bad)" : "var(--accent)";
+    $("barFill").style.width = Math.min(100, (left / (state.invoiceMinutes * 60)) * 100).toFixed(2) + "%";
+    // At zero, ask the server: it marks the order expired (or paid, if a payment just landed).
+    if (left === 0 && isOpen(state.order.status)) { clearInterval(state.tickTimer); check(); }
+  }
+
+  function isOpen(status) { return status === "pending" || status === "confirming" || status === "underpaid"; }
+  function isPaid(status) { return status === "paid" || status === "paid_late" || status === "manually_approved"; }
+
+  function check() {
+    var o = state.order;
+    if (!o) return;
+    $("check").disabled = true;
+    api("/orders/" + encodeURIComponent(o.id) + "/check", { method: "POST" })
+      .then(function (res) { if (res.order) state.order = res.order; render(); })
+      .catch(function (e) { showError(e.message); })
+      .then(function () { $("check").disabled = false; });
+  }
+
+  var STATUS = {
+    pending:    { t: "Waiting for payment", c: "var(--accent)", bg: "var(--accent-bg)" },
+    confirming: { t: "Payment seen",        c: "var(--info)",   bg: "var(--info-bg)" },
+    underpaid:  { t: "Underpaid",           c: "var(--bad)",    bg: "var(--bad-bg)" },
+    paid:       { t: "Paid",                c: "var(--ok)",     bg: "var(--ok-bg)" },
+    expired:    { t: "Expired",             c: "var(--bad)",    bg: "var(--bad-bg)" }
+  };
+
+  function render() {
+    var o = state.order, a = assetInfo(o.asset) || { decimals: 8 };
+    var status = isPaid(o.status) ? "paid" : o.status;
+    var s = STATUS[status] || STATUS.pending;
+    var sub = "Pay from your own wallet app.";
+    if (status === "confirming") sub = o.asset === "sol" ? "Waiting for finalization" : (o.confirmations || 0) + " of " + o.required_confirmations + " confirmations";
+    if (status === "underpaid") sub = "Send " + formatUnits(o.shortfall_amount, a.decimals) + " " + o.symbol + " more from the same wallet.";
+    if (status === "paid") sub = "Confirmed on-chain.";
+    if (status === "expired") sub = "This invoice is closed.";
+    if (o.provider_error && isOpen(o.status)) sub += " (Network check delayed, retrying.)";
+    $("statusTitle").textContent = s.t;
+    $("statusSub").textContent = sub;
+    $("statusBox").style.borderColor = s.c;
+    $("statusBox").style.background = s.bg;
+    $("statusDot").style.background = s.c;
+
+    var open = isOpen(o.status);
+    $("open").hidden = !open;
+    $("timer").hidden = !open; $("bar").hidden = !open;
+    $("back").hidden = !(open && o.status === "pending");
+    $("done").hidden = status !== "paid";
+    $("expired").hidden = status !== "expired";
+    if (status === "paid") {
+      $("doneText").textContent = formatUnits(o.expected_amount, a.decimals) + " " + o.symbol + " received. You're all set.";
+      $("finish").textContent = RETURN_URL ? "Continue" : "Done";
+    }
+    if (!open) { stopTimers(); storageSet(STORE_KEY, null); }
+  }
+
+  // ---------- boot ----------
+  function refreshAssets() {
+    return api("/assets").then(function (res) {
+      var pools = (res.assets || []).filter(function (a) { return a.checkout_open; });
+      if (pools.length) state.assets = pools;
+      if (!assetInfo(state.asset) || !assetInfo(state.asset).available) {
+        var first = state.assets.filter(function (a) { return a.available; })[0];
+        state.asset = first ? first.asset : null;
+      }
+      if (!$("select").hidden) renderCoins();
+    }).catch(function () {});
+  }
+
+  function boot() {
+    if (!PLAN_ID) { $("planName").textContent = "No product selected"; return showError("This checkout link is missing ?plan=<plan id>."); }
+    api("/plans").then(function (res) {
+      var plan = (res.plans || []).filter(function (p) { return p.id === PLAN_ID; })[0];
+      if (!plan) throw new Error("Unknown product: " + PLAN_ID);
+      state.plan = plan;
+      state.invoiceMinutes = res.invoice_minutes || 60;
+      state.assets = res.assets || [];
+      $("planName").textContent = plan.name;
+      $("planPrice").textContent = usd(plan.price_usd);
+      $("lockMins").textContent = state.invoiceMinutes;
+      var first = state.assets.filter(function (a) { return a.available; })[0];
+      state.asset = first ? first.asset : null;
+      if (!state.assets.length) return showError("Crypto checkout is not set up yet.");
+      if (!first) showError("Crypto payments are busy right now. Please try again in a few minutes.");
+
+      // Resume an open invoice after a refresh.
+      var saved = storageGet(STORE_KEY);
+      if (saved) {
+        return api("/orders/" + encodeURIComponent(saved)).then(function (o) {
+          if (isOpen(o.status)) { state.order = o; showPay(); } else { storageSet(STORE_KEY, null); showSelect(); }
+        }).catch(function () { storageSet(STORE_KEY, null); showSelect(); });
+      }
+      showSelect();
+    }).catch(function (e) { $("planName").textContent = "Unavailable"; showError(e.message); });
+  }
+
+  $("create").addEventListener("click", createOrder);
+  $("check").addEventListener("click", check);
+  $("back").addEventListener("click", function () { storageSet(STORE_KEY, null); state.order = null; showSelect(); });
+  $("restart").addEventListener("click", function () { state.order = null; showError(""); refreshAssets(); showSelect(); });
+  $("finish").addEventListener("click", function () { if (RETURN_URL) location.href = RETURN_URL; else { state.order = null; showSelect(); } });
+  $("copy").addEventListener("click", function () {
+    var text = $("address").textContent, btn = $("copy");
+    var ok = function () { btn.classList.add("done"); setTimeout(function () { btn.classList.remove("done"); }, 1500); };
+    if (navigator.clipboard) navigator.clipboard.writeText(text).then(ok, function () {});
+  });
+  document.addEventListener("visibilitychange", function () { if (!document.hidden && state.order && isOpen(state.order.status)) { tick(); check(); } });
+
+  boot();
+})();
+</script>
+</body>
+</html>

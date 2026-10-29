@@ -233,6 +233,33 @@ assets = watcher.asset_statuses()  # availability for checkout UI
 FastAPI version: see `src/paywatch/api.py` (`create_app(watcher)`).
 It needs `pip install fastapi` and is optional; the core does not.
 
+## Checkout page
+
+A ready-made buyer page ships with the package at
+`src/paywatch/static/checkout.html`. Both `api.py` and
+`examples/server.py` serve it at `GET /checkout`.
+
+Link a buyer to it with the plan already chosen by your project:
+
+    /checkout?plan=pro&ref=<buyer id>&return=https://yourapp/account
+
+| Param | Meaning |
+|---|---|
+| `plan` | required; the plan id whose USD price is charged |
+| `ref` | optional; stored as `buyer_ref` so `on_unlock` knows who paid |
+| `return` | optional; where the Continue button goes after payment |
+| `api` | optional; base URL of the JSON routes if not same origin |
+
+Flow on the page: it fetches `/plans` for the price and coin
+availability, the buyer picks a coin and pastes the wallet they will
+send from, `POST /orders` locks the amount and assigns a receive
+address, then the page shows the amount, a QR code, the address and a
+live countdown to `expires_at`. It calls `POST /orders/{id}/check`
+every 30 seconds (and when the tab comes back into view) and switches
+to confirmed, underpaid or expired from the server's answer. An open
+invoice survives a page refresh. The page never asks for a wallet
+connection or a key.
+
 ## Environment variables
 
 | Variable | Required | Meaning |
