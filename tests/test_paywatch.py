@@ -194,13 +194,34 @@ def test_expired_with_nothing_seen():
     assert w.check_order(order.id, now=late)["action"] == "expired"
 
 
-def test_manual_approve_fallback():
+def test_manual_approve_fallback(monkeypatch):
+    monkeypatch.setenv("PAYWATCH_CRON_SECRET", "unit-test-secret")
     w = make_watcher()
     order = make_order(w)
-    res = w.approve_order(order.id)
+    try:
+        w.approve_order(order.id, owner_secret="wrong")
+        assert False, "wrong owner secret must be rejected"
+    except WatcherError as exc:
+        assert exc.status_code == 403
+    assert w.get_order(order.id).status == "pending"
+    res = w.approve_order(order.id, owner_secret="unit-test-secret")
     assert res["action"] == "manually_approved"
     assert w.get_order(order.id).status == "manually_approved"
     assert w.check_order(order.id)["action"] == "already_paid"
+
+
+def test_manual_approve_unconfigured_fails_closed(monkeypatch):
+    monkeypatch.delenv("PAYWATCH_CRON_SECRET", raising=False)
+    w = make_watcher()
+    order = make_order(w)
+    for attempt in (None, "", "made-up-owner-secret"):
+        try:
+            w.approve_order(order.id, owner_secret=attempt)
+            assert False, "approval must stay disabled without a configured secret"
+        except WatcherError as exc:
+            assert exc.status_code == 503
+    assert w.get_order(order.id).status == "pending"
+
 
 
 def test_checkout_closed_without_receive_address():

@@ -575,7 +575,9 @@ class Watcher:
                       now: Optional[datetime] = None) -> Dict:
         """Owner manual approve, using the same unlock callback."""
         required = os.environ.get("PAYWATCH_CRON_SECRET", "").strip()
-        if required and owner_secret != required:
+        if not required:
+            raise WatcherError("manual approval is disabled until an owner secret is configured", 503)
+        if not isinstance(owner_secret, str) or not secrets.compare_digest(owner_secret, required):
             raise WatcherError("owner approval denied", 403)
         now = now or datetime.now(timezone.utc)
         order = self.store.get(order_id)
