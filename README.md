@@ -272,7 +272,7 @@ connection or a key.
 | `PAYWATCH_BTC_ADDRESS` | Optional legacy | One address BTC pool. |
 | `PAYWATCH_PLANS_JSON` | Yes, unless plans passed in code | JSON plans: `{"plans":[{"id","name","price_usd","duration_days","features"}]}`. |
 | `PAYWATCH_PLANS_FILE` | Alternative | Path to a JSON plans file (see `examples/plans.example.json`). |
-| `PAYWATCH_CRON_SECRET` | Optional | If set, `approve_order` requires it. If unset, the host must gate approval itself. |
+| `PAYWATCH_CRON_SECRET` | Required for manual approval | A unique owner secret authorizing `approve_order`. If unset, manual approval is **disabled (503)** rather than silently accepting unauthenticated payment approvals. Incorrect secrets return 403. |
 | `PAYWATCH_BTC_CONFIRMATIONS` | Optional | Positive integer. Default 2. |
 | `PAYWATCH_ETH_CONFIRMATIONS` | Optional | Positive integer. Default 12. |
 | `PAYWATCH_BNB_CONFIRMATIONS` | Optional | Positive integer. Default 15. |
