@@ -569,3 +569,114 @@ def test_explicit_empty_env_pool_closes_asset_without_default_fill():
     pools = load_address_pools({"PAYWATCH_ADDRESSES": '{"btc": []}'})
     assert pools["btc"] == []  # explicitly closed, defaults do not fill
     assert pools["eth"] == [DEFAULT_EVM]
+
+
+# ------------------------------------------------- audit 2026-11-24
+
+class MutableChain:
+    """Chain provider whose transactions change between calls."""
+
+    name = "mutable-chain"
+
+    def __init__(self):
+        self.txs = []
+        self.calls = 0
+
+    def address_txs(self, _address):
+        self.calls += 1
+        return list(self.txs)
+
+    def tip_height(self):
+        return 100
+
+
+def _btc_tx(txid, receive="btc-pool"):
+    return {
+        "txid": txid,
+        "vout": [{"value": 100_000, "scriptpubkey_address": receive}],
+        "vin": [{"prevout": {"scriptpubkey_address": BTC_PAYER}}],
+        "status": {"confirmed": True, "block_height": 99},
+    }
+
+
+def test_chain_failover_refetches_after_ttl():
+    chain = MutableChain()
+    fetcher = FailoverChainFetcher("btc", [chain], cache_ttl_s=0)
+    assert fetcher.fetch_address("pool-address").txs == []
+    chain.txs = [{"txid": "late-tx"}]
+    assert fetcher.fetch_address("pool-address").txs == [{"txid": "late-tx"}]
+    assert chain.calls == 2
+
+
+def test_chain_failover_cache_dedups_within_ttl():
+    chain = MutableChain()
+    fetcher = FailoverChainFetcher("btc", [chain])
+    first = fetcher.fetch_address("pool-address")
+    assert first.txs == []
+    chain.txs = [{"txid": "late-tx"}]
+    second = fetcher.fetch_address("pool-address")
+    assert second is first
+    assert second.txs == []
+    assert chain.calls == 1
+
+
+def test_watcher_sees_payment_arriving_after_first_check():
+    chain = MutableChain()
+    watcher = Watcher(
+        plans=PLANS, store=MemoryStore(),
+        chain_fetchers={"btc": FailoverChainFetcher(
+            "btc", [chain], cache_ttl_s=0)},
+        rate_fetcher=FakePrice(19000.0),
+        address_pools={"btc": ["btc-pool"]})
+    order = watcher.create_order("starter", BTC_PAYER, rate_usd=19000.0)
+    assert watcher.check_order(order.id)["action"] == "pending"
+    chain.txs = [_btc_tx("pay-tx")]
+    res = watcher.check_order(order.id)
+    assert res["action"] == "unlocked"
+    assert watcher.get_order(order.id).txid == "pay-tx"
+
+
+def test_api_create_order_requires_plan_and_payer():
+    from fastapi.testclient import TestClient
+
+    from paywatch.api import create_app
+
+    watcher = Watcher(
+        plans=PLANS, store=MemoryStore(),
+        chain_fetchers={"btc": FakeChain()},
+        rate_fetcher=FakePrice(1900.0),
+        address_pools={"btc": ["btc-pool"]})
+    client = TestClient(create_app(watcher), raise_server_exceptions=False)
+    assert client.post("/orders", json={}).status_code == 400
+    assert client.post(
+        "/orders", json={"plan_id": "starter"}).status_code == 400
+    assert client.post(
+        "/orders", json={"payer_address": BTC_PAYER}).status_code == 400
+    ok = client.post("/orders", json={
+        "plan_id": "starter", "payer_address": BTC_PAYER})
+    assert ok.status_code == 200
+    assert ok.json()["plan_id"] == "starter"
+
+
+def test_select_receive_address_empty_pool_errors():
+    watcher = Watcher(
+        plans=PLANS, store=MemoryStore(),
+        chain_fetchers={"btc": FakeChain()},
+        rate_fetcher=FakePrice(1900.0),
+        address_pools={"btc": []})
+    with pytest.raises(WatcherError) as caught:
+        watcher._select_receive_address("btc")
+    assert caught.value.status_code == 503
+    assert caught.value.code == "CHECKOUT_CLOSED"
+
+
+def test_checkout_page_shows_late_payment_honestly():
+    from paywatch.api import checkout_html
+
+    html = checkout_html()
+    assert 'id="late"' in html
+    assert "Payment arrived late" in html
+    assert 'o.status === "paid_late" ? "late"' in html
+    # The success screen is for real unlocks only; a late payment
+    # must never be shown "You're all set".
+    assert 'status === "paid" || status === "manually_approved"' in html

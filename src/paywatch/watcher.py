@@ -308,6 +308,10 @@ class Watcher:
 
     def _select_receive_address(self, asset: str) -> str:
         pool = self.pool_for(asset)
+        if not pool:
+            raise WatcherError(
+                f"checkout closed: no {asset} receive addresses are configured",
+                503, code="CHECKOUT_CLOSED")
         counts = (self.store.active_counts(asset)
                   if hasattr(self.store, "active_counts") else {})
         minimum = min((counts.get(address, 0) for address in pool), default=0)
@@ -445,11 +449,21 @@ class Watcher:
             txs, order.payer_address, order.receive_address,
             order.expected_amount, tip, asset=order.asset,
             transaction_family=family)
-        cand = res["match"]
+        candidates = res.get("candidates") or (
+            [res["match"]] if res["match"] else [])
         order.seen_amount = max(order.seen_amount, res["best_seen_amount"])
         if res["best_seen_txid"]:
             order.seen_txid = res["best_seen_txid"]
-        if cand is not None:
+        # Walk the ranked candidates, skipping any tx already claimed
+        # by another order. The best candidate may belong to a
+        # different purchase; a second, still-unclaimed payment for
+        # this order must unlock it instead of reporting reuse.
+        claimed_txid = None
+        for cand in candidates:
+            if self.store.txid_claimed_by(cand["txid"], order.id) is not None:
+                if claimed_txid is None:
+                    claimed_txid = cand["txid"]
+                continue
             order.confirmations = cand["confirmations"]
             if cand["confirmations"] >= order.required_confirmations:
                 if expired:
@@ -459,16 +473,6 @@ class Watcher:
                         "invoice expiry; owner manual resolution required")
                     self.store.save(order)
                     return {"action": "paid_late", "provider": provider_name,
-                            "provider_errors": provider_errors,
-                            "order": order.public()}
-                clash = self.store.txid_claimed_by(cand["txid"], order.id)
-                if clash is not None:
-                    order.status = "underpaid"
-                    order.late_payment_note = (
-                        f"tx {cand['txid']} already claimed by another "
-                        "purchase; not reused")
-                    self.store.save(order)
-                    return {"action": "txid_reused", "provider": provider_name,
                             "provider_errors": provider_errors,
                             "order": order.public()}
                 self._unlock(order, cand, now)
@@ -488,6 +492,18 @@ class Watcher:
             order.status = "confirming"
             self.store.save(order)
             return {"action": "confirming", "provider": provider_name,
+                    "provider_errors": provider_errors,
+                    "order": order.public()}
+        if claimed_txid is not None:
+            # Every qualifying candidate was already claimed by another
+            # purchase. Keep the single-use rule and say so.
+            order.confirmations = candidates[0]["confirmations"]
+            order.status = "underpaid"
+            order.late_payment_note = (
+                f"tx {claimed_txid} already claimed by another "
+                "purchase; not reused")
+            self.store.save(order)
+            return {"action": "txid_reused", "provider": provider_name,
                     "provider_errors": provider_errors,
                     "order": order.public()}
         if expired:
@@ -519,7 +535,7 @@ class Watcher:
         now = now or datetime.now(timezone.utc)
         counts = {"checked": 0, "unlocked": 0, "confirming": 0,
                   "underpaid": 0, "pending": 0, "expired": 0,
-                  "paid_late": 0, "errors": 0}
+                  "paid_late": 0, "txid_reused": 0, "errors": 0}
         pools = {asset: pool for asset, pool in self.address_pools.items() if pool}
         if not pools and fetcher is None and not self.chain_fetchers \
                 and self.fetcher is None:

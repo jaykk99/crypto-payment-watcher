@@ -419,14 +419,41 @@ class SolanaRPCFetcher:
 
 
 class FailoverChainFetcher:
-    """Try chain providers in registry order and retain every error."""
+    """Try chain providers in registry order and retain every error.
 
-    def __init__(self, asset: str, providers: Sequence[object]):
+    Address fetches are cached briefly (``cache_ttl_s``, default 30s)
+    so one sweep probes each address once, but a later poll
+    re-fetches: a payment that arrives after the first fetch must be
+    visible to the next check. The cache used to live forever, so a
+    long-lived Watcher never saw a payment that arrived after its
+    first fetch of an address and the order could never unlock.
+    """
+
+    def __init__(self, asset: str, providers: Sequence[object],
+                 cache_ttl_s: float = 30.0):
         self.asset = asset
         self.providers = list(providers)
         self.last_provider: Optional[str] = None
         self.last_errors: List[Dict] = []
-        self._cache: Dict[str, FetchResult] = {}
+        self.cache_ttl_s = float(cache_ttl_s)
+        self._cache: Dict[str, tuple] = {}
+
+    def clear_cache(self, address: Optional[str] = None) -> None:
+        """Drop cached fetches: one address, or all when omitted."""
+        if address is None:
+            self._cache.clear()
+        else:
+            self._cache.pop(address, None)
+
+    def _cached(self, address: str) -> Optional[FetchResult]:
+        entry = self._cache.get(address)
+        if entry is None:
+            return None
+        fetched_at, result = entry
+        if time.monotonic() - fetched_at > self.cache_ttl_s:
+            del self._cache[address]
+            return None
+        return result
 
     @staticmethod
     def _provider_name(provider) -> str:
@@ -440,8 +467,9 @@ class FailoverChainFetcher:
                              "bad_response", str(exc)[:300])
 
     def fetch_address(self, address: str) -> FetchResult:
-        if address in self._cache:
-            return self._cache[address]
+        cached = self._cached(address)
+        if cached is not None:
+            return cached
         errors: List[ProviderError] = []
         for provider in self.providers:
             name = self._provider_name(provider)
@@ -464,7 +492,7 @@ class FailoverChainFetcher:
                                  [e.as_dict() for e in errors])
             self.last_provider = name
             self.last_errors = result.errors
-            self._cache[address] = result
+            self._cache[address] = (time.monotonic(), result)
             return result
         self.last_errors = [e.as_dict() for e in errors]
         raise AllProvidersUnavailable(errors, "address fetch")
@@ -473,8 +501,9 @@ class FailoverChainFetcher:
         return self.fetch_address(address).txs
 
     def tip_height(self) -> Optional[int]:
-        if self._cache:
-            return next(iter(self._cache.values())).tip_height
+        for entry in self._cache.values():
+            if time.monotonic() - entry[0] <= self.cache_ttl_s:
+                return entry[1].tip_height
         self.health()
         return None
 

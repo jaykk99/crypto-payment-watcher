@@ -9,11 +9,13 @@ import os
 import sys
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from paywatch import (  # noqa: E402
-    Watcher, MemoryStore, SQLiteStore, btc_to_sats, threshold_sats,
-    usd_to_sats, valid_btc_address, match_payment,
+    Watcher, MemoryStore, SQLiteStore, btc_to_sats, load_plans,
+    threshold_sats, usd_to_sats, valid_btc_address, match_payment,
 )
 from paywatch.watcher import WatcherError  # noqa: E402
 
@@ -280,3 +282,58 @@ def test_on_unlock_callback_receives_order_and_tx():
     order = w.create_order("starter", PAYER, rate_usd=19000.0)
     w.check_order(order.id)
     assert seen == [("starter", "tx1")]
+
+
+# ------------------------------------------------- audit 2026-11-24
+
+def test_matcher_ignores_tx_without_txid():
+    bad = tx(None, 100_000, conf_height=99)
+    del bad["txid"]
+    res = match_payment([bad], PAYER, RECEIVE, 100_000, 100)
+    assert res["match"] is None
+    assert res["candidates"] == []
+    assert res["best_seen_sats"] == 0
+    assert res["best_seen_txid"] is None
+
+
+def test_order_does_not_unlock_on_txid_less_tx():
+    bad = tx(None, 100_000, conf_height=99)
+    del bad["txid"]
+    w = make_watcher([bad])
+    order = make_order(w)
+    res = w.check_order(order.id)
+    assert res["action"] == "pending"
+    assert w.get_order(order.id).status == "pending"
+    assert w.get_order(order.id).txid is None
+
+
+def test_second_payment_unlocks_when_best_tx_claimed():
+    w = make_watcher()
+    o1 = make_order(w)
+    o2 = make_order(w)
+    # txA ranks first (more confirmations) but belongs to o1 once o1
+    # unlocks; txB is o2's own payment and must unlock o2.
+    w.fetcher.txs = [tx("txA", 100_000, conf_height=90),
+                     tx("txB", 100_000, conf_height=99)]
+    assert w.check_order(o1.id)["action"] == "unlocked"
+    assert w.get_order(o1.id).txid == "txA"
+    res = w.check_order(o2.id)
+    assert res["action"] == "unlocked"
+    assert w.get_order(o2.id).txid == "txB"
+
+
+def test_sweep_counts_txid_reused():
+    w = make_watcher([tx("shared", 100_000, conf_height=99)])
+    o1 = make_order(w)
+    o2 = make_order(w)
+    assert w.check_order(o1.id)["action"] == "unlocked"
+    result = w.sweep()
+    assert result["checked"] == 1
+    assert result["txid_reused"] == 1
+
+
+def test_zero_price_plan_rejected():
+    with pytest.raises(ValueError):
+        load_plans([{"id": "free", "name": "Free", "price_usd": 0}])
+    with pytest.raises(ValueError):
+        load_plans([{"id": "bad", "name": "Bad", "price_usd": -5}])

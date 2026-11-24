@@ -83,6 +83,13 @@ def load_plans(source: Optional[object] = None) -> Dict[str, Plan]:
             duration_days=int(entry.get("duration_days", PLAN_DURATION_DAYS)),
             features=list(entry.get("features") or []),
         )
+        if not plan.price_usd > 0:
+            # A zero or negative price pins an expected amount of 0, and
+            # any dust payment from the payer would then "match" and
+            # unlock the tier. A plan that cannot be priced must fail
+            # here, at configuration time, not at checkout.
+            raise ValueError(
+                f"plan {plan.id} must have a positive price_usd")
         plans[plan.id] = plan
     if not plans:
         raise ValueError(
@@ -652,6 +659,7 @@ def match_account_payment(txs: List[Dict], payer_address: Optional[str],
     candidates.sort(key=lambda c: (c["confirmations"], c["received_amount"]),
                     reverse=True)
     return {"match": candidates[0] if candidates else None,
+            "candidates": candidates,
             "best_seen_sats": best_seen,
             "best_seen_amount": best_seen,
             "best_seen_txid": best_txid}
@@ -664,14 +672,18 @@ def match_payment(txs: List[Dict], payer_address: Optional[str],
                   transaction_family: Optional[str] = None) -> Dict:
     """Pure payment matcher over one explorer transaction list.
 
-    Returns {"match": candidate|None, "best_seen_sats": int,
-    "best_seen_txid": str|None}. A UTXO candidate must spend from the
-    declared payer address AND send at least the threshold amount to
-    the receive address. Change outputs back to the payer do not
-    count: only outputs TO the receive address count. A payment from
-    an exchange hot wallet, or any address other than the declared
-    one, does NOT match. Account family assets use the normalized
-    EVM matcher above; no individual EVM chain is special cased here.
+    Returns {"match": candidate|None, "candidates": [candidate, ...],
+    "best_seen_sats": int, "best_seen_txid": str|None}. Candidates are
+    ranked most-confirmed first, then largest. A UTXO candidate must
+    spend from the declared payer address AND send at least the
+    threshold amount to the receive address. Change outputs back to
+    the payer do not count: only outputs TO the receive address count.
+    A payment from an exchange hot wallet, or any address other than
+    the declared one, does NOT match. Account family assets use the
+    normalized EVM matcher above; no individual EVM chain is special
+    cased here. Transactions without a txid are ignored: without one
+    the single-use rule cannot be enforced and the order would be
+    recorded as paid with no transaction to point at.
     """
     family = transaction_family or (
         "account" if (asset or "btc").lower() in ("eth", "bnb")
@@ -686,6 +698,9 @@ def match_payment(txs: List[Dict], payer_address: Optional[str],
     best_seen_txid: Optional[str] = None
     candidates: List[Dict] = []
     for tx in txs or []:
+        txid = tx.get("txid")
+        if not txid:
+            continue
         to_receive = tx_received_sats(tx, receive_addr)
         if to_receive <= 0:
             continue
@@ -693,11 +708,11 @@ def match_payment(txs: List[Dict], payer_address: Optional[str],
             continue
         if to_receive > best_seen_sats:
             best_seen_sats = to_receive
-            best_seen_txid = tx.get("txid")
+            best_seen_txid = txid
         if to_receive < need:
             continue
         candidates.append({
-            "txid": tx.get("txid"),
+            "txid": txid,
             "received_sats": to_receive,
             "received_amount": to_receive,
             "confirmations": tx_confirmations(tx, tip_height),
@@ -705,6 +720,7 @@ def match_payment(txs: List[Dict], payer_address: Optional[str],
     candidates.sort(key=lambda c: (c["confirmations"], c["received_amount"]),
                     reverse=True)
     return {"match": candidates[0] if candidates else None,
+            "candidates": candidates,
             "best_seen_sats": best_seen_sats,
             "best_seen_amount": best_seen_sats,
             "best_seen_txid": best_seen_txid}

@@ -70,8 +70,13 @@ def create_app(watcher: Watcher):
 
     @app.post("/orders")
     async def create_order(body: dict):
+        plan_id = body.get("plan_id")
+        payer_address = body.get("payer_address")
+        if not plan_id or not payer_address:
+            raise WatcherError(
+                "plan_id and payer_address are required", 400)
         order = watcher.create_order(
-            body["plan_id"], body["payer_address"],
+            plan_id, payer_address,
             buyer_ref=body.get("buyer_ref", ""),
             asset=body.get("asset", "btc"))
         return order.public()

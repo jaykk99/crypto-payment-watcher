@@ -256,7 +256,10 @@ send from, `POST /orders` locks the amount and assigns a receive
 address, then the page shows the amount, a QR code, the address and a
 live countdown to `expires_at`. It calls `POST /orders/{id}/check`
 every 30 seconds (and when the tab comes back into view) and switches
-to confirmed, underpaid or expired from the server's answer. An open
+to confirmed, underpaid or expired from the server's answer. A payment
+that confirms after the invoice expired is shown as arrived late and
+does not unlock access; the buyer is told to contact support with
+their transaction ID. An open
 invoice survives a page refresh. The page never asks for a wallet
 connection or a key.
 
