@@ -35,6 +35,11 @@ BLOCKSTREAM_BASE = "https://blockstream.info/api"
 MEMPOOL_PAGES = 5
 MEMPOOL_PAGE_SIZE = 25
 MAX_UTXO_TXS = 125
+# A provider answer is a transaction list, a tip height, or a price:
+# none of those is legitimately megabytes. Cap the read so a
+# compromised or broken explorer cannot OOM the watcher by streaming
+# an unbounded body at us.
+MAX_RESPONSE_BYTES = 10 * 1024 * 1024
 
 
 class ProviderError(Exception):
@@ -79,16 +84,26 @@ def _classify_http(provider: str, status: int, message: str) -> ProviderError:
     return ProviderError(provider, kind, message, status=status)
 
 
+def _read_capped(resp, provider: str) -> str:
+    raw = resp.read(MAX_RESPONSE_BYTES + 1)
+    if len(raw) > MAX_RESPONSE_BYTES:
+        raise ProviderError(provider, "bad_response",
+                            "response exceeded size limit")
+    return raw.decode("utf-8")
+
+
 def _get_json(provider: str, url: str, timeout: float = 15.0):
     req = urllib.request.Request(
         url, headers={"User-Agent": "crypto-payment-watcher/2.0"})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            raw = resp.read().decode("utf-8")
+            raw = _read_capped(resp, provider)
     except urllib.error.HTTPError as exc:
         raise _classify_http(provider, exc.code, f"HTTP {exc.code}") from exc
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         raise ProviderError(provider, "unreachable", str(exc)) from exc
+    except ProviderError:
+        raise
     try:
         return json.loads(raw)
     except (ValueError, UnicodeDecodeError) as exc:
@@ -104,11 +119,13 @@ def _post_json(provider: str, url: str, payload: Dict,
                  "Content-Type": "application/json"})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            raw = resp.read().decode("utf-8")
+            raw = _read_capped(resp, provider)
     except urllib.error.HTTPError as exc:
         raise _classify_http(provider, exc.code, f"HTTP {exc.code}") from exc
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         raise ProviderError(provider, "unreachable", str(exc)) from exc
+    except ProviderError:
+        raise
     try:
         return json.loads(raw)
     except (ValueError, UnicodeDecodeError) as exc:
@@ -419,14 +436,23 @@ class SolanaRPCFetcher:
 
 
 class FailoverChainFetcher:
-    """Try chain providers in registry order and retain every error."""
+    """Try chain providers in registry order and retain every error.
+
+    Every fetch goes to the providers: there is deliberately NO
+    per-address result cache here. An earlier version cached the
+    first fetch per address forever, so in a long-running host
+    process a payment that arrived after the first check was never
+    seen and its invoice stayed pending forever. Within one sweep
+    the watcher wraps this fetcher in _CachedFetcher, which dedupes
+    per sweep; that is the only cache, and it is thrown away with
+    the sweep.
+    """
 
     def __init__(self, asset: str, providers: Sequence[object]):
         self.asset = asset
         self.providers = list(providers)
         self.last_provider: Optional[str] = None
         self.last_errors: List[Dict] = []
-        self._cache: Dict[str, FetchResult] = {}
 
     @staticmethod
     def _provider_name(provider) -> str:
@@ -440,8 +466,6 @@ class FailoverChainFetcher:
                              "bad_response", str(exc)[:300])
 
     def fetch_address(self, address: str) -> FetchResult:
-        if address in self._cache:
-            return self._cache[address]
         errors: List[ProviderError] = []
         for provider in self.providers:
             name = self._provider_name(provider)
@@ -464,7 +488,6 @@ class FailoverChainFetcher:
                                  [e.as_dict() for e in errors])
             self.last_provider = name
             self.last_errors = result.errors
-            self._cache[address] = result
             return result
         self.last_errors = [e.as_dict() for e in errors]
         raise AllProvidersUnavailable(errors, "address fetch")
@@ -473,9 +496,13 @@ class FailoverChainFetcher:
         return self.fetch_address(address).txs
 
     def tip_height(self) -> Optional[int]:
-        if self._cache:
-            return next(iter(self._cache.values())).tip_height
-        self.health()
+        for provider in self.providers:
+            if not hasattr(provider, "tip_height"):
+                continue
+            try:
+                return provider.tip_height()
+            except Exception:
+                continue
         return None
 
     def health(self) -> str:

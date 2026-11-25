@@ -76,13 +76,22 @@ def load_plans(source: Optional[object] = None) -> Dict[str, Plan]:
         items = []
     plans: Dict[str, Plan] = {}
     for entry in items or []:
-        plan = Plan(
-            id=str(entry["id"]),
-            name=str(entry.get("name", entry["id"])),
-            price_usd=float(entry["price_usd"]),
-            duration_days=int(entry.get("duration_days", PLAN_DURATION_DAYS)),
-            features=list(entry.get("features") or []),
-        )
+        if not isinstance(entry, dict):
+            raise ValueError(f"invalid plan entry (not an object): {entry!r}")
+        try:
+            plan = Plan(
+                id=str(entry["id"]),
+                name=str(entry.get("name", entry["id"])),
+                price_usd=float(entry["price_usd"]),
+                duration_days=int(entry.get("duration_days", PLAN_DURATION_DAYS)),
+                features=list(entry.get("features") or []),
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(f"invalid plan entry {entry!r}: {exc}") from exc
+        if plan.price_usd != plan.price_usd or plan.price_usd in (float("inf"), float("-inf")):
+            raise ValueError(f"invalid plan entry {entry!r}: price_usd is not finite")
+        if plan.price_usd < 0:
+            raise ValueError(f"invalid plan entry {entry!r}: price_usd is negative")
         plans[plan.id] = plan
     if not plans:
         raise ValueError(

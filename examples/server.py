@@ -20,7 +20,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from paywatch import Watcher, supported_assets  # noqa: E402
-from paywatch.api import checkout_html  # noqa: E402
+from paywatch.api import checkout_html, validate_order_payload  # noqa: E402
 from paywatch.watcher import WatcherError  # noqa: E402
 
 
@@ -51,8 +51,21 @@ class Handler(BaseHTTPRequestHandler):
         return self._send(exc.status_code, payload)
 
     def _body(self):
-        length = int(self.headers.get("Content-Length") or 0)
-        return json.loads(self.rfile.read(length) or b"{}") if length else {}
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            raise WatcherError("invalid Content-Length", 400,
+                               code="INVALID_ORDER")
+        if length < 0 or length > 1024 * 1024:
+            raise WatcherError("request body too large", 413,
+                               code="INVALID_ORDER")
+        if not length:
+            return {}
+        try:
+            return json.loads(self.rfile.read(length) or b"{}")
+        except ValueError:
+            raise WatcherError("request body is not valid JSON", 400,
+                               code="INVALID_ORDER")
 
     def _send_html(self, html):
         body = html.encode()
@@ -88,10 +101,10 @@ class Handler(BaseHTTPRequestHandler):
         try:
             body = self._body()
             if self.path == "/orders":
+                fields = validate_order_payload(body)
                 order = watcher.create_order(
-                    body["plan_id"], body["payer_address"],
-                    buyer_ref=body.get("buyer_ref", ""),
-                    asset=body.get("asset", "btc"))
+                    fields["plan_id"], fields["payer_address"],
+                    buyer_ref=fields["buyer_ref"], asset=fields["asset"])
                 return self._send(200, order.public())
             parts = self.path.strip("/").split("/")
             if len(parts) == 3 and parts[0] == "orders" and parts[2] == "check":

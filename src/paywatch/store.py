@@ -10,6 +10,7 @@ EVM hashes by the watcher and matcher.
 from __future__ import annotations
 
 import sqlite3
+import threading
 from collections import Counter
 from datetime import datetime, timezone
 from typing import Dict, Optional
@@ -32,40 +33,52 @@ class MemoryStore:
     def __init__(self) -> None:
         self.orders: Dict[str, Order] = {}
         self.counters: Dict[str, int] = {}
+        # Hosts serve this from threads (FastAPI, ThreadingHTTPServer).
+        # Dict ops are atomic one by one, but a check-then-act pair
+        # (and iterating while another thread saves) is not.
+        self._lock = threading.RLock()
 
     def save(self, order: Order) -> None:
-        self.orders[order.id] = order
+        with self._lock:
+            self.orders[order.id] = order
 
     def get(self, order_id: str) -> Optional[Order]:
-        return self.orders.get(order_id)
+        with self._lock:
+            return self.orders.get(order_id)
 
     def all_open(self) -> list:
-        return [o for o in self.orders.values() if o.status in OPEN_STATUSES]
+        with self._lock:
+            return [o for o in self.orders.values() if o.status in OPEN_STATUSES]
 
     def all_orders(self) -> list:
-        return list(self.orders.values())
+        with self._lock:
+            return list(self.orders.values())
 
     def active_counts(self, asset: Optional[str] = None) -> Counter:
         counts: Counter = Counter()
-        for order in self.orders.values():
-            if order.status not in OPEN_STATUSES:
-                continue
-            if asset is not None and order.asset != asset:
-                continue
-            counts[order.receive_address] += 1
+        with self._lock:
+            for order in self.orders.values():
+                if order.status not in OPEN_STATUSES:
+                    continue
+                if asset is not None and order.asset != asset:
+                    continue
+                counts[order.receive_address] += 1
         return counts
 
     def txid_claimed_by(self, txid: str, exclude_order_id: str) -> Optional[str]:
-        for o in self.orders.values():
-            if o.id != exclude_order_id and o.txid == txid:
-                return o.id
+        with self._lock:
+            for o in self.orders.values():
+                if o.id != exclude_order_id and o.txid == txid:
+                    return o.id
         return None
 
     def get_counter(self, name: str) -> int:
-        return int(self.counters.get(name, 0))
+        with self._lock:
+            return int(self.counters.get(name, 0))
 
     def set_counter(self, name: str, value: int) -> None:
-        self.counters[name] = int(value)
+        with self._lock:
+            self.counters[name] = int(value)
 
 
 class SQLiteStore:
@@ -87,6 +100,11 @@ class SQLiteStore:
 
     def __init__(self, path: str):
         self.path = path
+        # One shared connection with check_same_thread=False is NOT
+        # thread-safe on its own: concurrent saves from a threaded
+        # host raised InterfaceError / "cannot commit - no transaction
+        # is active". Every statement below runs under this lock.
+        self._lock = threading.RLock()
         self._conn = sqlite3.connect(path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("""
@@ -116,6 +134,10 @@ class SQLiteStore:
         self._conn.commit()
 
     def save(self, order: Order) -> None:
+        with self._lock:
+            self._save_locked(order)
+
+    def _save_locked(self, order: Order) -> None:
         self._conn.execute("""
             INSERT INTO orders (
                 id, plan_id, price_usd, payer_address, receive_address,
@@ -175,48 +197,55 @@ class SQLiteStore:
             last_checked_at=_parse_dt(d.get("last_checked_at")))
 
     def get(self, order_id: str) -> Optional[Order]:
-        row = self._conn.execute(
-            "SELECT * FROM orders WHERE id=?", (order_id,)).fetchone()
-        return self._row_to_order(row) if row else None
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM orders WHERE id=?", (order_id,)).fetchone()
+            return self._row_to_order(row) if row else None
 
     def all_open(self) -> list:
-        rows = self._conn.execute(
-            "SELECT * FROM orders WHERE status IN "
-            "('pending','confirming','underpaid')").fetchall()
-        return [self._row_to_order(r) for r in rows]
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM orders WHERE status IN "
+                "('pending','confirming','underpaid')").fetchall()
+            return [self._row_to_order(r) for r in rows]
 
     def all_orders(self) -> list:
-        rows = self._conn.execute("SELECT * FROM orders").fetchall()
-        return [self._row_to_order(r) for r in rows]
+        with self._lock:
+            rows = self._conn.execute("SELECT * FROM orders").fetchall()
+            return [self._row_to_order(r) for r in rows]
 
     def active_counts(self, asset: Optional[str] = None) -> Counter:
-        if asset is None:
-            rows = self._conn.execute(
-                "SELECT receive_address, COUNT(*) AS n FROM orders "
-                "WHERE status IN ('pending','confirming','underpaid') "
-                "GROUP BY receive_address").fetchall()
-        else:
-            rows = self._conn.execute(
-                "SELECT receive_address, COUNT(*) AS n FROM orders "
-                "WHERE asset=? AND status IN "
-                "('pending','confirming','underpaid') "
-                "GROUP BY receive_address", (asset,)).fetchall()
-        return Counter({row["receive_address"]: row["n"] for row in rows})
+        with self._lock:
+            if asset is None:
+                rows = self._conn.execute(
+                    "SELECT receive_address, COUNT(*) AS n FROM orders "
+                    "WHERE status IN ('pending','confirming','underpaid') "
+                    "GROUP BY receive_address").fetchall()
+            else:
+                rows = self._conn.execute(
+                    "SELECT receive_address, COUNT(*) AS n FROM orders "
+                    "WHERE asset=? AND status IN "
+                    "('pending','confirming','underpaid') "
+                    "GROUP BY receive_address", (asset,)).fetchall()
+            return Counter({row["receive_address"]: row["n"] for row in rows})
 
     def txid_claimed_by(self, txid: str, exclude_order_id: str) -> Optional[str]:
-        row = self._conn.execute(
-            "SELECT id FROM orders WHERE txid=? AND id!=?",
-            (txid, exclude_order_id)).fetchone()
-        return row[0] if row else None
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT id FROM orders WHERE txid=? AND id!=?",
+                (txid, exclude_order_id)).fetchone()
+            return row[0] if row else None
 
     def get_counter(self, name: str) -> int:
-        row = self._conn.execute(
-            "SELECT value FROM paywatch_meta WHERE key=?", (name,)).fetchone()
-        return int(row[0]) if row else 0
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT value FROM paywatch_meta WHERE key=?", (name,)).fetchone()
+            return int(row[0]) if row else 0
 
     def set_counter(self, name: str, value: int) -> None:
-        self._conn.execute(
-            "INSERT INTO paywatch_meta(key, value) VALUES (?,?) "
-            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-            (name, int(value)))
-        self._conn.commit()
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO paywatch_meta(key, value) VALUES (?,?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (name, int(value)))
+            self._conn.commit()

@@ -21,6 +21,36 @@ from .assets import supported_assets
 from .watcher import Watcher, WatcherError
 
 
+def validate_order_payload(body) -> Dict:
+    """Check a POST /orders body before the watcher touches it.
+
+    Missing or wrong-typed plan_id / payer_address used to raise a
+    raw KeyError out of the route and come back as a 500. Callers get
+    a 400 with a stable code instead.
+    """
+    if not isinstance(body, dict):
+        raise WatcherError("order body must be a JSON object", 400,
+                           code="INVALID_ORDER")
+    plan_id = body.get("plan_id")
+    payer_address = body.get("payer_address")
+    buyer_ref = body.get("buyer_ref", "")
+    asset = body.get("asset", "btc")
+    if not isinstance(plan_id, str) or not plan_id.strip():
+        raise WatcherError("plan_id is required", 400, code="INVALID_ORDER")
+    if not isinstance(payer_address, str) or not payer_address.strip():
+        raise WatcherError("payer_address is required", 400,
+                           code="INVALID_ORDER")
+    if not isinstance(buyer_ref, str):
+        raise WatcherError("buyer_ref must be a string", 400,
+                           code="INVALID_ORDER")
+    if not isinstance(asset, str) or not asset.strip():
+        raise WatcherError("asset must be a string", 400, code="INVALID_ORDER")
+    return {"plan_id": plan_id.strip(),
+            "payer_address": payer_address.strip(),
+            "buyer_ref": buyer_ref,
+            "asset": asset.strip()}
+
+
 def checkout_html() -> str:
     """The bundled buyer checkout page. Serve it next to the JSON
     routes; it calls them on the same origin (or ?api=<base url>)."""
@@ -70,10 +100,10 @@ def create_app(watcher: Watcher):
 
     @app.post("/orders")
     async def create_order(body: dict):
+        fields = validate_order_payload(body)
         order = watcher.create_order(
-            body["plan_id"], body["payer_address"],
-            buyer_ref=body.get("buyer_ref", ""),
-            asset=body.get("asset", "btc"))
+            fields["plan_id"], fields["payer_address"],
+            buyer_ref=fields["buyer_ref"], asset=fields["asset"])
         return order.public()
 
     @app.get("/orders/{order_id}")

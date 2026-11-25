@@ -452,15 +452,9 @@ class Watcher:
         if cand is not None:
             order.confirmations = cand["confirmations"]
             if cand["confirmations"] >= order.required_confirmations:
-                if expired:
-                    order.status = "paid_late"
-                    order.late_payment_note = (
-                        f"qualifying tx {cand['txid']} confirmed after "
-                        "invoice expiry; owner manual resolution required")
-                    self.store.save(order)
-                    return {"action": "paid_late", "provider": provider_name,
-                            "provider_errors": provider_errors,
-                            "order": order.public()}
+                # Single-use txid is checked BEFORE the expiry branch:
+                # a late payment must still claim its txid, or the
+                # same transaction could later unlock a second order.
                 clash = self.store.txid_claimed_by(cand["txid"], order.id)
                 if clash is not None:
                     order.status = "underpaid"
@@ -469,6 +463,17 @@ class Watcher:
                         "purchase; not reused")
                     self.store.save(order)
                     return {"action": "txid_reused", "provider": provider_name,
+                            "provider_errors": provider_errors,
+                            "order": order.public()}
+                if expired:
+                    order.status = "paid_late"
+                    order.txid = cand["txid"]
+                    order.tx_received_amount = cand["received_amount"]
+                    order.late_payment_note = (
+                        f"qualifying tx {cand['txid']} confirmed after "
+                        "invoice expiry; owner manual resolution required")
+                    self.store.save(order)
+                    return {"action": "paid_late", "provider": provider_name,
                             "provider_errors": provider_errors,
                             "order": order.public()}
                 self._unlock(order, cand, now)
@@ -519,7 +524,8 @@ class Watcher:
         now = now or datetime.now(timezone.utc)
         counts = {"checked": 0, "unlocked": 0, "confirming": 0,
                   "underpaid": 0, "pending": 0, "expired": 0,
-                  "paid_late": 0, "errors": 0}
+                  "paid_late": 0, "txid_reused": 0,
+                  "watcher_disabled": 0, "errors": 0}
         pools = {asset: pool for asset, pool in self.address_pools.items() if pool}
         if not pools and fetcher is None and not self.chain_fetchers \
                 and self.fetcher is None:

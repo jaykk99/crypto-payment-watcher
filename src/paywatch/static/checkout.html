@@ -147,6 +147,15 @@
       <button class="primary" id="finish" style="margin-top: 10px">Done</button>
     </div>
 
+    <div class="result" id="late" hidden>
+      <div class="result-icon" style="background: var(--info-bg); border-color: var(--info); color: var(--info)">
+        <svg aria-hidden="true" width="38" height="38" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+      </div>
+      <h2>Payment received late</h2>
+      <p id="lateText"></p>
+      <button class="primary" id="restartLate" style="margin-top: 10px">Start a new invoice</button>
+    </div>
+
     <div class="result" id="expired" hidden>
       <div class="result-icon" style="background: var(--bad-bg); border-color: var(--bad); color: var(--bad)">
         <svg aria-hidden="true" width="38" height="38" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
@@ -318,17 +327,23 @@
     confirming: { t: "Payment seen",        c: "var(--info)",   bg: "var(--info-bg)" },
     underpaid:  { t: "Underpaid",           c: "var(--bad)",    bg: "var(--bad-bg)" },
     paid:       { t: "Paid",                c: "var(--ok)",     bg: "var(--ok-bg)" },
+    paid_late:  { t: "Payment received late", c: "var(--info)", bg: "var(--info-bg)" },
     expired:    { t: "Expired",             c: "var(--bad)",    bg: "var(--bad-bg)" }
   };
 
   function render() {
     var o = state.order, a = assetInfo(o.asset) || { decimals: 8 };
-    var status = isPaid(o.status) ? "paid" : o.status;
+    // paid_late is NOT paid: the money arrived after expiry and
+    // nothing is unlocked until the seller confirms it manually.
+    // It used to collapse into the paid view ("You're all set").
+    var status = o.status === "paid_late" ? "paid_late"
+      : isPaid(o.status) ? "paid" : o.status;
     var s = STATUS[status] || STATUS.pending;
     var sub = "Pay from your own wallet app.";
     if (status === "confirming") sub = o.asset === "sol" ? "Waiting for finalization" : (o.confirmations || 0) + " of " + o.required_confirmations + " confirmations";
     if (status === "underpaid") sub = "Send " + formatUnits(o.shortfall_amount, a.decimals) + " " + o.symbol + " more from the same wallet.";
     if (status === "paid") sub = "Confirmed on-chain.";
+    if (status === "paid_late") sub = "Arrived after the invoice expired. Nothing is unlocked yet; contact support with your transaction ID.";
     if (status === "expired") sub = "This invoice is closed.";
     if (o.provider_error && isOpen(o.status)) sub += " (Network check delayed, retrying.)";
     $("statusTitle").textContent = s.t;
@@ -342,10 +357,14 @@
     $("timer").hidden = !open; $("bar").hidden = !open;
     $("back").hidden = !(open && o.status === "pending");
     $("done").hidden = status !== "paid";
+    $("late").hidden = status !== "paid_late";
     $("expired").hidden = status !== "expired";
     if (status === "paid") {
       $("doneText").textContent = formatUnits(o.expected_amount, a.decimals) + " " + o.symbol + " received. You're all set.";
       $("finish").textContent = RETURN_URL ? "Continue" : "Done";
+    }
+    if (status === "paid_late") {
+      $("lateText").textContent = "Your " + formatUnits(o.expected_amount, a.decimals) + " " + o.symbol + " payment arrived after this invoice expired. Keep your transaction ID and contact support; the seller confirms it manually.";
     }
     if (!open) { stopTimers(); storageSet(STORE_KEY, null); }
   }
@@ -394,6 +413,7 @@
   $("check").addEventListener("click", check);
   $("back").addEventListener("click", function () { storageSet(STORE_KEY, null); state.order = null; showSelect(); });
   $("restart").addEventListener("click", function () { state.order = null; showError(""); refreshAssets(); showSelect(); });
+  $("restartLate").addEventListener("click", function () { state.order = null; showError(""); refreshAssets(); showSelect(); });
   $("finish").addEventListener("click", function () { if (RETURN_URL) location.href = RETURN_URL; else { state.order = null; showSelect(); } });
   $("copy").addEventListener("click", function () {
     var text = $("address").textContent, btn = $("copy");
